@@ -89,9 +89,8 @@ def gen_ddl(tbl, layer):
         cl = "%-5s%-30s %-18s" % (sep, col["code"], ct)
         if col["name"] and col["name"] != col["code"]: cl += " " + chr(39) + col["name"] + chr(39)
         lines.append(cl.rstrip())
-    lines.extend([")with", "(   orientation = column,", "    compression = low,", "    colversion = 2.0,", "    enable_delta = true", ")"])
-    lines.append("DISTRIBUTE BY HASH (%s)" % dk)
-    lines.append(chr(39) + cname + chr(39) + ";")
+    lines.extend([")WITH", "\t(", "\t\torientation = column,", "\t\tcompression = low,", "\t\tcolversion = 2.0,", "\t\tenable_delta = false", "\t) DISTRIBUTE BY HASH (%s)" % dk])
+    lines.append("COMMENT " + chr(39) + cname + chr(39) + ";")
     return lines
 
 

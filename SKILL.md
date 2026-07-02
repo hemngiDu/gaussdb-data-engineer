@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS + 前置逗号 + 行尾注释 + WITH 子句 + DISTRIBUTE BY HAS
 - 数值金额：DECIMAL(18, 4)
 - 字符串：VARCHAR(n)
 - 数字/计数：INTEGER
-- WITH 子句：GaussDB 列存参数 (orientation = column, compression = low, colversion = 2.0, enable_delta = true)
+- WITH 子句：GaussDB 列存参数 (orientation = column, compression = low, colversion = 2.0, enable_delta = false)
 - DISTRIBUTE BY HASH：选合适分布键
 - COMMENT：表注释
 - 表名前面有一段 /*=====*/ 注释块

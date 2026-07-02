@@ -21,11 +21,11 @@ create table if not exists {schema}.{table_name}
    ,amount_val    DECIMAL(18, 4)    comment '金额'
    ,cnt_val       INTEGER           comment '计数'
    ,create_time   TIMESTAMP         comment '创建时间'
-)with
+)WITH
 (   orientation = column,
     compression = low,
     colversion = 2.0,
-    enable_delta = true
+    enable_delta = false
 )DISTRIBUTE BY HASH (distribution_key)
 comment '表中文名';
 `
@@ -91,3 +91,51 @@ left join dim.dim_table_c c
 - 代码段注释：-----说明文字-------
 - 注释掉的字段保留：--,column_name
 - 注释掉的 JOIN 保留：-- left join ...
+
+
+## 临时表模式
+```
+create temporary table tmp_{business}
+WITH (orientation = column,compression = low) as
+--drop table if exists tmp_{business};
+(
+    select ...
+)
+;
+--drop table if exists tmp_{business};
+```
+
+## NVL 空值处理
+```
+nvl(column_name,'-')    as column_name -- '注释'
+```
+
+## IF 逻辑
+```
+if(condition, value_if_true, value_if_false) as column_name
+```
+
+## 变量格式
+```
+${var_months}   -- 月份变量
+${var_date}     -- 日期变量
+substr('${var_months}',1,4)  -- 取年（注意变量前后有空格）
+substr('${var_months}',1,7)  -- 取月
+```
+
+## DELETE + INSERT 分隔符
+```
+----------原有数据删除---------------
+delete
+from schema.table
+where substr(months,1,4) = substr( '${var_months}' ,1,4)
+;
+
+-------------新数据插入------------
+insert into schema.table
+(
+     col_1     -- '字段注释'
+    ,col_2     -- '字段注释'
+)
+select ...;
+```
