@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import re, sys, os, argparse
 from datetime import datetime
 
@@ -12,6 +13,10 @@ TYPE_MAP = {
     "text": "TEXT", "clob": "TEXT", "blob": "BYTEA",
 }
 
+LAYERS = ["irpt", "dwi", "dwm", "dws", "ads"]
+# Suffixes to strip when identifying chain
+CHAIN_SUFFIXES = ["_his", "_t1", "_t2", "_bak", "_tmp"]
+
 def parse_pdm(filepath):
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
@@ -22,7 +27,8 @@ def parse_pdm(filepath):
         c = re.search(r"<a:Code>([^<]+)</a:Code>", tx)
         n = re.search(r"<a:Name>([^<]+)</a:Name>", tx)
         if not c: continue
-        tc = c.group(1).strip(); tn = n.group(1).strip() if n else ""
+        tc = c.group(1).strip()
+        tn = n.group(1).strip() if n else ""
         schema, tname = "", tc.lower()
         if "." in tc:
             parts = tc.split(".", 1)
@@ -35,7 +41,6 @@ def parse_pdm(filepath):
             cn = re.search(r"<a:Name>([^<]+)</a:Name>", cx)
             ct = re.search(r"<a:DataType>([^<]+)</a:DataType>", cx)
             cl = re.search(r"<a:Length>([^<]+)</a:Length>", cx)
-            cp = re.search(r"<a:Precision>([^<]+)</a:Precision>", cx)
             if not cc: continue
             code = cc.group(1).strip().lower()
             name = cn.group(1).strip() if cn else code
@@ -44,7 +49,7 @@ def parse_pdm(filepath):
             for k, v in TYPE_MAP.items():
                 if raw.startswith(k): base = v; break
             prec = ""
-            pm = re.search(r"\(([^)]+)\)", raw)
+            pm = re.search(r"\\([^)]+\\)", raw)
             if pm: prec = pm.group(1)
             elif cl and cl.group(1) and base == "VARCHAR": prec = cl.group(1)
             columns.append({"code": code, "name": name, "type": base, "precision": prec})
@@ -52,7 +57,26 @@ def parse_pdm(filepath):
             tables.append({"schema": schema, "name": tname, "cname": tn, "columns": columns})
     return tables
 
-LAYERS = ["irpt", "dwi", "dwm", "dws", "ads"]
+
+def get_chain_key(tbl):
+    """Extract the chain (business) key from a table name.
+    
+    Table pattern: {layer_prefix}_{freq_prefix}_{business}_{suffix}
+    Example: irpt_m_sale_amt_his -> chain key = m_sale_amt
+    """
+    name = tbl["name"]
+    # Strip layer prefix
+    for lp in LAYERS:
+        if name.startswith(lp + "_"):
+            name = name[len(lp) + 1:]
+            break
+    # Strip known suffixes
+    for sfx in CHAIN_SUFFIXES:
+        if name.endswith(sfx):
+            name = name[:-len(sfx)]
+            break
+    return name
+
 
 def gen_ddl(tbl, layer):
     cname = tbl["cname"] if tbl["cname"] else layer + "_" + tbl["name"]
@@ -70,7 +94,8 @@ def gen_ddl(tbl, layer):
     lines.append(chr(39) + cname + chr(39) + ";")
     return lines
 
-def gen_file_header(tables_text):
+
+def gen_header():
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     return [
         "-- DDL from Power Designer PDM",
@@ -81,17 +106,51 @@ def gen_file_header(tables_text):
         ""
     ]
 
-def output_to_folder(tables, folder, schema_filter=None):
-    os.makedirs(folder, exist_ok=True)
-    groups = {}
+
+def gen_chain_header(chain_key):
+    return [
+        "-- ******************************************************************** --",
+        "-- Data Chain: " + chain_key,
+        "-- author: 我是谁",
+        "-- create time: " + datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+        "-- ******************************************************************** --",
+        ""
+    ]
+
+
+def output_pdm(pdm_path, folder_arg, schema_filter):
+    """Main output function: creates ddl/ and 链路/ sub-folders."""
+    tables = parse_pdm(pdm_path)
+    if not tables:
+        print("No tables found in PDM", file=sys.stderr)
+        sys.exit(1)
+    
+    # Determine base folder
+    pdm_name = os.path.splitext(os.path.basename(pdm_path))[0]
+    if folder_arg:
+        base_folder = folder_arg
+    else:
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        base_folder = os.path.join(desktop, pdm_name)
+    
+    # Sub-folders
+    ddl_folder = os.path.join(base_folder, "ddl")
+    chain_folder = os.path.join(base_folder, "链路")  # 链路
+    
+    os.makedirs(ddl_folder, exist_ok=True)
+    os.makedirs(chain_folder, exist_ok=True)
+    
+    # --- Step 1: Group by layer for DDL output ---
+    layer_groups = {}
     for t in tables:
         l = t["schema"] if t["schema"] in LAYERS else "dwi"
         if schema_filter and l != schema_filter: continue
-        groups.setdefault(l, []).append(t)
+        layer_groups.setdefault(l, []).append(t)
+    
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     for l in LAYERS:
-        if l not in groups: continue
-        layer_file = os.path.join(folder, l + ".sql")
+        if l not in layer_groups: continue
+        filepath = os.path.join(ddl_folder, l + ".sql")
         out_lines = [
             "-- DDL from Power Designer PDM",
             "-- ******************************************************************** --",
@@ -102,59 +161,98 @@ def output_to_folder(tables, folder, schema_filter=None):
             "-- ================ Layer: " + l + " ================",
             ""
         ]
-        for t in groups[l]:
+        for t in layer_groups[l]:
             out_lines.extend(gen_ddl(t, l))
             out_lines.append("")
-        with open(layer_file, "w", encoding="utf-8") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write("\n".join(out_lines))
-        print("Written: " + layer_file)
+        print("Written: " + filepath)
+    
+    # --- Step 2: Group by chain for 链路 output ---
+    chain_groups = {}
+    for t in tables:
+        if schema_filter and t["schema"] not in LAYERS:
+            l = t["schema"] if t["schema"] in LAYERS else "dwi"
+            if l != schema_filter: continue
+        key = get_chain_key(t)
+        chain_groups.setdefault(key, []).append(t)
+    
+    for ckey, ctables in sorted(chain_groups.items()):
+        # Sort tables by layer order
+        ctables.sort(key=lambda x: LAYERS.index(x["schema"]) if x["schema"] in LAYERS else 99)
+        
+        filepath = os.path.join(chain_folder, ckey + ".sql")
+        out_lines = gen_chain_header(ckey)
+        
+        prev_layer = None
+        for t in ctables:
+            l = t["schema"] if t["schema"] in LAYERS else "dwi"
+            # Add flow comment between layers
+            if prev_layer and l != prev_layer:
+                out_lines.append("")
+                out_lines.append("-- >>> Flow: " + prev_layer + " -> " + l + " <<<")
+                out_lines.append("")
+            out_lines.extend(gen_ddl(t, l))
+            out_lines.append("")
+            prev_layer = l
+        
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("\n".join(out_lines))
+        print("Written: " + filepath)
+    
     print("")
-    print("All files saved to: " + folder)
+    print("All files saved to: " + base_folder)
+    print("  ddl/   - Layer-based DDL files")
+    print("  链路/ - Chain-based pipeline files")
+
 
 def main():
     ap = argparse.ArgumentParser(description="PDM to GaussDB DDL")
     ap.add_argument("pdm_file", help="Power Designer .pdm file path")
-    ap.add_argument("-o", "--output", help="Single output file (default: layer files to desktop)")
+    ap.add_argument("-o", "--output", help="Single output file (overrides folder mode)")
     ap.add_argument("--schema", choices=LAYERS, help="Filter by single layer only")
-    ap.add_argument("--folder", help="Output folder (default: Desktop/{PDM文件名})")
+    ap.add_argument("--folder", help="Base output folder (default: Desktop/{PDM文件名})")
     args = ap.parse_args()
+    
     if not os.path.exists(args.pdm_file):
-        print("File not found", file=sys.stderr); sys.exit(1)
-    tables = parse_pdm(args.pdm_file)
-    if not tables:
-        print("No tables found in PDM", file=sys.stderr); sys.exit(1)
-    # Determine output folder
-    pdm_name = os.path.splitext(os.path.basename(args.pdm_file))[0]
-    if args.folder:
-        out_folder = args.folder
-    elif args.output:
-        out_folder = None  # single-file mode
-    else:
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        out_folder = os.path.join(desktop, pdm_name)
-    # Single-file mode
+        print("File not found", file=sys.stderr)
+        sys.exit(1)
+    
+    # Single-file mode (legacy)
     if args.output:
+        tables = parse_pdm(args.pdm_file)
+        if not tables:
+            print("No tables found", file=sys.stderr)
+            sys.exit(1)
         groups = {}
         for t in tables:
             l = t["schema"] if t["schema"] in LAYERS else "dwi"
             if args.schema and l != args.schema: continue
             groups.setdefault(l, []).append(t)
-        out = gen_file_header("")
+        now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        out = [
+            "-- DDL from Power Designer PDM",
+            "-- ******************************************************************** --",
+            "-- author: 我是谁",
+            "-- create time: " + now,
+            "-- ******************************************************************** --",
+            ""
+        ]
         for l in LAYERS:
             if l not in groups: continue
-            out.append(""); out.append("-- " + "=" * 30 + " Layer: " + l + " " + "=" * 30)
+            out.append("")
+            out.append("-- " + "=" * 30 + " Layer: " + l + " " + "=" * 30)
             for t in groups[l]:
-                out.extend(gen_ddl(t, l)); out.append("")
+                out.extend(gen_ddl(t, l))
+                out.append("")
         text = "\n".join(out)
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(text)
         print("Written: " + args.output)
     else:
-        # Desktop layer-output mode
-        output_to_folder(tables, out_folder, args.schema)
-        print("")
-        print("Usage: python scripts/pdm_to_gaussdb.py <pdm_file>")
-        print("       Default output: ~/Desktop/{PDM文件名}/{irpt,dwi,dwm,dws,ads}.sql")
-        print("       Use -o for single file output")
+        # Default: output to desktop with ddl/ and 链路/ sub-folders
+        output_pdm(args.pdm_file, args.folder, args.schema)
 
-if __name__ == "__main__": main()
+
+if __name__ == "__main__":
+    main()
