@@ -1,0 +1,4 @@
+interface:
+  display_name: "GaussDB数据工程师"
+  short_description: "GaussDB数据开发专用skill，用来按固定风格生成SQL代码"
+  default_prompt: "按你的GaussDB数据工程风格写SQL"
