@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import re, sys, os, argparse
+from datetime import datetime
 
 TYPE_MAP = {
     "nvarchar": "VARCHAR", "varchar": "VARCHAR", "char": "VARCHAR",
@@ -69,31 +70,91 @@ def gen_ddl(tbl, layer):
     lines.append(chr(39) + cname + chr(39) + ";")
     return lines
 
-def main():
-    ap = argparse.ArgumentParser(description="PDM to GaussDB DDL")
-    ap.add_argument("pdm_file")
-    ap.add_argument("-o", "--output")
-    ap.add_argument("--schema", choices=LAYERS)
-    args = ap.parse_args()
-    if not os.path.exists(args.pdm_file): print("File not found", file=sys.stderr); sys.exit(1)
-    tables = parse_pdm(args.pdm_file)
-    if not tables: print("No tables", file=sys.stderr); sys.exit(1)
+def gen_file_header(tables_text):
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    return [
+        "-- DDL from Power Designer PDM",
+        "-- ******************************************************************** --",
+        "-- author: 我是谁",
+        "-- create time: " + now,
+        "-- ******************************************************************** --",
+        ""
+    ]
+
+def output_to_folder(tables, folder, schema_filter=None):
+    os.makedirs(folder, exist_ok=True)
     groups = {}
     for t in tables:
         l = t["schema"] if t["schema"] in LAYERS else "dwi"
-        if args.schema and l != args.schema: continue
+        if schema_filter and l != schema_filter: continue
         groups.setdefault(l, []).append(t)
-    out = ["-- DDL from Power Designer PDM", "-- " + "*" * 62, ""]
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     for l in LAYERS:
         if l not in groups: continue
-        out.append(""); out.append("-- " + "=" * 30 + " Layer: " + l + " " + "=" * 30)
+        layer_file = os.path.join(folder, l + ".sql")
+        out_lines = [
+            "-- DDL from Power Designer PDM",
+            "-- ******************************************************************** --",
+            "-- author: 我是谁",
+            "-- create time: " + now,
+            "-- ******************************************************************** --",
+            "",
+            "-- ================ Layer: " + l + " ================",
+            ""
+        ]
         for t in groups[l]:
-            out.extend(gen_ddl(t, l)); out.append("")
-    text = chr(10).join(out)
-    if args.output:
-        open(args.output, "w", encoding="utf-8").write(text)
-        print("Written:", args.output)
+            out_lines.extend(gen_ddl(t, l))
+            out_lines.append("")
+        with open(layer_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(out_lines))
+        print("Written: " + layer_file)
+    print("")
+    print("All files saved to: " + folder)
+
+def main():
+    ap = argparse.ArgumentParser(description="PDM to GaussDB DDL")
+    ap.add_argument("pdm_file", help="Power Designer .pdm file path")
+    ap.add_argument("-o", "--output", help="Single output file (default: layer files to desktop)")
+    ap.add_argument("--schema", choices=LAYERS, help="Filter by single layer only")
+    ap.add_argument("--folder", help="Output folder (default: Desktop/{PDM文件名})")
+    args = ap.parse_args()
+    if not os.path.exists(args.pdm_file):
+        print("File not found", file=sys.stderr); sys.exit(1)
+    tables = parse_pdm(args.pdm_file)
+    if not tables:
+        print("No tables found in PDM", file=sys.stderr); sys.exit(1)
+    # Determine output folder
+    pdm_name = os.path.splitext(os.path.basename(args.pdm_file))[0]
+    if args.folder:
+        out_folder = args.folder
+    elif args.output:
+        out_folder = None  # single-file mode
     else:
-        print(text)
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        out_folder = os.path.join(desktop, pdm_name)
+    # Single-file mode
+    if args.output:
+        groups = {}
+        for t in tables:
+            l = t["schema"] if t["schema"] in LAYERS else "dwi"
+            if args.schema and l != args.schema: continue
+            groups.setdefault(l, []).append(t)
+        out = gen_file_header("")
+        for l in LAYERS:
+            if l not in groups: continue
+            out.append(""); out.append("-- " + "=" * 30 + " Layer: " + l + " " + "=" * 30)
+            for t in groups[l]:
+                out.extend(gen_ddl(t, l)); out.append("")
+        text = "\n".join(out)
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(text)
+        print("Written: " + args.output)
+    else:
+        # Desktop layer-output mode
+        output_to_folder(tables, out_folder, args.schema)
+        print("")
+        print("Usage: python scripts/pdm_to_gaussdb.py <pdm_file>")
+        print("       Default output: ~/Desktop/{PDM文件名}/{irpt,dwi,dwm,dws,ads}.sql")
+        print("       Use -o for single file output")
 
 if __name__ == "__main__": main()

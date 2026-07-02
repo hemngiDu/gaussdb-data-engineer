@@ -1,3 +1,43 @@
+## 输出规范
+
+所有生成的 SQL 代码默认保存到桌面，按分层输出到独立文件。
+
+### PDM 文件处理流程
+
+1. 读取 PDM 文件后，自动在桌面创建文件夹（文件夹名 = PDM 文件名，不含扩展名）
+2. 如果文件夹已存在则直接使用
+3. 按层级（irpt / dwi / dwm / dws / ads）分别输出到独立文件
+4. 输出结构示例：
+
+   桌面/{PDM文件名}/
+   ├── irpt.sql
+   ├── dwi.sql
+   ├── dwm.sql
+   ├── dws.sql
+   └── ads.sql
+
+### 对话生成处理流程
+
+1. 当对话中生成 DDL/ETL SQL 时，询问用户保存到哪个文件夹
+2. 默认以业务主题名在桌面创建文件夹
+3. 按分层分别输出为 .sql 文件
+4. 一个链路（业务主题）输出一套分层文件
+
+### 文件头
+
+每个输出文件包含标准文件头：
+- author: 我是谁
+- create time: 当前生成时间
+- 层级标识
+
+### 脚本用法
+
+python scripts/pdm_to_gaussdb.py <pdm文件路径>
+
+默认行为：输出到桌面/{PDM文件名}/{层级}.sql
+指定单文件输出：python scripts/pdm_to_gaussdb.py <pdm路径> -o 输出文件.sql
+
+
 ---
 name: gaussdb-data-engineer
 description: ��Ϊ��GaussDB���ݿ���ר�ü��ܡ������ݹ���ʦ我是谁�Ĺ̶��������SQL���루DDL������DML��ϴ��ETL�ӹ���������������(1)�û��ṩ����ģ�ͻ���ṹҪ������SQL (2)�û��������д���Ҫ�󰴷���д (3)�û�����Power Designer .pdm�ļ�Ҫ������DDL (4)��Ҫ���ֲ�ܹ�(irpt��dwi��dws��ads)дSQL������
