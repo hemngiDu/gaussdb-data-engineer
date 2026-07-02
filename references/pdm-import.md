@@ -118,3 +118,12 @@ python scripts/pdm_to_gaussdb.py 模型文件.pdm --schema dwi
 
 # 单文件模式（默认会分成 ddl/ + 链路/）
 python scripts/pdm_to_gaussdb.py 模型文件.pdm -o output.sql
+
+## 箭头关系与 ETL 生成
+
+PDM 中的箭头（Reference）代表数据流向：
+- 父表（Parent）→ 子表（Child）
+- 每个箭头生成一段 DELETE + INSERT ETL 脚本
+- 关联字段来自 ReferenceJoin
+
+生成的 ETL 会保存到 链路/文件夹下，按业务主题分文件。
