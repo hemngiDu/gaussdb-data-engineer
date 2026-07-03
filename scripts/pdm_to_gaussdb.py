@@ -43,8 +43,16 @@ def extract_notes(desc_xml):
         while i2 < len(sql_line):
             if i2 + 3 < len(sql_line) and sql_line[i2] == chr(92) and sql_line[i2+1] == "'":
                 try: out.append(bytes.fromhex(sql_line[i2+2:i2+4]).decode('gbk'))
-                except: out.append('?')
-                i2 += 4
+                except:
+                    # Collect consecutive hex bytes and decode as group
+                    hex_buf = [sql_line[i2+2:i2+4]]
+                    j = i2 + 4
+                    while j + 3 < len(sql_line) and sql_line[j] == chr(92) and sql_line[j+1] == "'":
+                        hex_buf.append(sql_line[j+2:j+4])
+                        j += 4
+                    try: out.append(bytes.fromhex(''.join(hex_buf)).decode('gbk'))
+                    except: out.append('[' + ','.join(hex_buf) + ']')
+                    i2 = j
             else: out.append(sql_line[i2]); i2 += 1
         decoded_sql.append(''.join(out))
     sql_lines = decoded_sql
