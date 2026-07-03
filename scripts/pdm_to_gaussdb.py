@@ -17,6 +17,72 @@ LAYERS = ["irpt", "dwi", "dwm", "dws", "ads"]
 CHAIN_SUFFIXES = ["_his", "_t1", "_t2", "_bak", "_tmp"]
 VAR_MONTHS = "${var_months}"
 
+
+def extract_notes(desc_xml):
+    if not desc_xml or len(desc_xml.strip()) < 10: return "", ""
+    text = desc_xml.replace("&#39;", "'")
+    gbk_bytes = []; i = 0
+    while i < len(text):
+        if i + 3 < len(text) and text[i] == chr(92) and text[i+1] == "'":
+            try: gbk_bytes.append(int(text[i+2:i+4], 16))
+            except: pass
+            i += 4
+        elif text[i] == chr(92): i += 1
+        else: i += 1
+    cn = bytes(gbk_bytes).decode("gbk", errors="replace") if gbk_bytes else ""
+    plain = re.sub(r"\\(?:[a-z]+[0-9]*|\\*)", " ", text)
+    plain = re.sub(r"[{}]", " ", plain)
+    plain = re.sub(r"\\s+", " ", plain).strip()
+    lines = [l.strip() for l in plain.split(chr(10)) if l.strip()]
+    sql_lines = [l for l in lines if any(k in l.lower() for k in ["like ","nvl(","and ","or ","is null","in ("])]
+    # Decode CHR(92)-quote-hex sequences in SQL (same as Chinese text decoding)
+    decoded_sql = []
+    for sql_line in sql_lines:
+        i2 = 0
+        out = []
+        while i2 < len(sql_line):
+            if i2 + 3 < len(sql_line) and sql_line[i2] == chr(92) and sql_line[i2+1] == "'":
+                try: out.append(bytes.fromhex(sql_line[i2+2:i2+4]).decode('gbk'))
+                except: out.append('?')
+                i2 += 4
+            else: out.append(sql_line[i2]); i2 += 1
+        decoded_sql.append(''.join(out))
+    sql_lines = decoded_sql
+    return cn, chr(10).join(sql_lines)
+
+def parse_pdm_with_notes(filepath):
+    tbid, tables, refs = parse_pdm(filepath)
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f: xmlc = f.read()
+    for t in tables:
+        code = (t["schema"] + "." + t["name"] if t["schema"] else t["name"]).lower()
+        pat = "<o:Table[^>]*>.*?<a:Code>" + re.escape(code) + "</a:Code>.*?</o:Table>"
+        tbl_m = re.search(pat, xmlc, 16)
+        if tbl_m:
+            dm = re.search("<a:Description>(.*?)</a:Description>", tbl_m.group(0), 16)
+            if dm:
+                cn, sql = extract_notes(dm.group(1))
+                if cn or sql: t["notes_text"] = cn; t["notes_sql"] = sql
+
+    # Parse ExtendedDependency directly (data arrows, NOT Symbol wrapper)
+    if not refs:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f: xmlc = f.read()
+        pat_ext = re.compile(r'<o:ExtendedDependency[^>]*>(.*?)</o:ExtendedDependency>', re.DOTALL)
+        for m in pat_ext.finditer(xmlc):
+            ex = m.group(1)
+            if '<a:ObjectID>' not in ex: continue
+            om1 = re.search(r'<c:Object1>.*?<o:Table\s+Ref="([^"]+)"', ex, re.DOTALL)
+            om2 = re.search(r'<c:Object2>.*?<o:Table\s+Ref="([^"]+)"', ex, re.DOTALL)
+            if om1 and om2:
+                src_tid, dst_tid = om1.group(1), om2.group(1)
+                if src_tid != dst_tid and src_tid in tbid and dst_tid in tbid:
+                    exists = any(r['parent_id']==src_tid and r['child_id']==dst_tid for r in refs)
+                    if not exists:
+                        refs.append({'parent_id':src_tid, 'child_id':dst_tid, 'join_cols':[], 'code':'ExtDep'})
+        if refs:
+            print('Found', len(refs), 'ExtendedDependency arrows')
+
+    return tbid, tables, refs
+
 def parse_pdm(filepath):
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
@@ -139,6 +205,8 @@ def gen_etl(ref, tbid):
     L.append("")
     L.append("-- =============================================")
     L.append("-- Arrow: " + src + " -> " + tgt)
+    if parent.get("notes_text",""): L.append("-- Notes: " + parent["notes_text"])
+    if child.get("notes_text",""): L.append("-- Notes: " + child["notes_text"])
     if ref["code"]: L.append("-- " + ref["code"])
     if parent["cname"] and child["cname"]: L.append("-- " + parent["cname"] + " -> " + child["cname"])
     L.append("-- =============================================")
@@ -175,6 +243,8 @@ def gen_etl(ref, tbid):
             jc = join_map.get(col["code"], col["code"])
             L.append("%snvl(src.%-15s,0) as %-20s%s" % (pfx, jc, col["code"], cmt))
     L.append("from " + src + " src")
+    sn = parent.get("notes_sql","") or child.get("notes_sql","")
+    if sn: L.append("where " + sn)
     if ref["join_cols"]:
         conds = []
         for pc_id, cc_id in ref["join_cols"]:
@@ -190,7 +260,7 @@ def gen_etl(ref, tbid):
     return L
 
 def output_pdm(pdm_path, folder_arg, schema_filter):
-    tbid, tables, refs = parse_pdm(pdm_path)
+    tbid, tables, refs = parse_pdm_with_notes(pdm_path)
     if not tables:
         print("No tables found in PDM", file=sys.stderr)
         sys.exit(1)
@@ -312,7 +382,7 @@ def main():
         print("File not found", file=sys.stderr)
         sys.exit(1)
     if args.output:
-        tbid, tables, _ = parse_pdm(args.pdm_file)
+        tbid, tables, _ = parse_pdm_with_notes(args.pdm_file)
         if not tables:
             print("No tables found", file=sys.stderr)
             sys.exit(1)
