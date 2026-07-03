@@ -77,7 +77,7 @@ def parse_pdm_with_notes(filepath):
                 if src_tid != dst_tid and src_tid in tbid and dst_tid in tbid:
                     exists = any(r['parent_id']==src_tid and r['child_id']==dst_tid for r in refs)
                     if not exists:
-                        refs.append({'parent_id':src_tid, 'child_id':dst_tid, 'join_cols':[], 'code':'ExtDep'})
+                        refs.append({'parent_id':dst_tid, 'child_id':src_tid, 'join_cols':[], 'code':'ExtDep'})
         if refs:
             print('Found', len(refs), 'ExtendedDependency arrows')
 
@@ -308,7 +308,7 @@ def output_pdm(pdm_path, folder_arg, schema_filter):
             if schema_filter and get_layer(child["schema"]) != schema_filter: continue
             parent = tbid.get(ref["parent_id"])
             if not parent: continue
-            ckey = get_chain_key(parent["name"])
+            ckey = get_chain_key(child["name"])
             chain_refs.setdefault(ckey, []).append(ref)
 
         for ckey in sorted(chain_refs.keys()):
