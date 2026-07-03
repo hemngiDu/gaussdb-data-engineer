@@ -296,14 +296,15 @@ def gen_merged_etl(trefs, tbid, var_months):
         pfx = '     ' if i == 0 else '    ,'
         cmt = ' -- ' + col['name'] if col['name'] and col['name'] != col['code'] else ''
         L.append('%st1.%-23s%s' % (pfx, col['code'], cmt))
-    L.append('from ' + main_parent['schema'] + '.' + main_parent['name'] + ' t1')
-    for r in trefs[1:]:
+    L.append('from ' + main_parent['schema'] + '.' + main_parent['name'] + ' t1  -- ' + main_parent.get('cname',''))
+    for idx, r in enumerate(trefs[1:], 2):
         dp = tbid.get(r['parent_id'])
         if not dp: continue
-        L.append('left join ' + dp['schema'] + '.' + dp['name'] + ' t2')
+        alias = 't' + str(idx)
+        L.append('left join ' + dp['schema'] + '.' + dp['name'] + ' ' + alias + '  -- ' + dp.get('cname',''))
         common = sorted(set(c['code'] for c in main_parent['columns'] for d in dp['columns'] if c['code'] == d['code']))[:5]
         if common:
-            L.append('    on ' + ' and '.join('t1.' + c + ' = t2.' + c for c in common))
+            L.append('    on ' + ' and '.join('t1.' + c + ' = ' + alias + '.' + c for c in common))
     L.append("where substr(t1.months,1,4) = substr( '" + var_months + "' ,1,4)")
     L.append(';')
     return L
