@@ -267,6 +267,47 @@ def gen_etl(ref, tbid):
     L.append(";")
     return L
 
+def gen_merged_etl(trefs, tbid, var_months):
+    if not trefs: return []
+    child = tbid[trefs[0]['child_id']]
+    if not child: return []
+    tgt = '%s.%s' % (child['schema'] or 'dwi', child['name'])
+    L = []
+    L.append('')
+    L.append('-- Merge: ' + ' + '.join([tbid[r['parent_id']]['schema']+'.'+tbid[r['parent_id']]['name'] for r in trefs if r['parent_id'] in tbid]) + ' -> ' + tgt)
+    L.append('')
+    L.append('----------\u539f\u6709\u6570\u636e\u5220\u9664---------------')
+    L.append('delete')
+    L.append('from ' + tgt)
+    L.append("where substr(months,1,4) = substr( '" + var_months + "' ,1,4)")
+    L.append(';')
+    L.append('')
+    L.append('-------------\u65b0\u6570\u636e\u63d2\u5165------------')
+    L.append('insert into ' + tgt)
+    L.append('(')
+    for i, col in enumerate(child['columns']):
+        pfx = '    ' if i == 0 else '   ,'
+        cmt = " -- '" + col['name'] + "'" if col['name'] and col['name'] != col['code'] else ''
+        L.append('%s%-25s%s' % (pfx, col['code'], cmt))
+    L.append(')')
+    L.append('select')
+    main_parent = tbid[trefs[0]['parent_id']]
+    for i, col in enumerate(child['columns']):
+        pfx = '     ' if i == 0 else '    ,'
+        cmt = ' -- ' + col['name'] if col['name'] and col['name'] != col['code'] else ''
+        L.append('%st1.%-23s%s' % (pfx, col['code'], cmt))
+    L.append('from ' + main_parent['schema'] + '.' + main_parent['name'] + ' t1')
+    for r in trefs[1:]:
+        dp = tbid.get(r['parent_id'])
+        if not dp: continue
+        L.append('left join ' + dp['schema'] + '.' + dp['name'] + ' t2')
+        common = sorted(set(c['code'] for c in main_parent['columns'] for d in dp['columns'] if c['code'] == d['code']))[:5]
+        if common:
+            L.append('    on ' + ' and '.join('t1.' + c + ' = t2.' + c for c in common))
+    L.append("where substr(t1.months,1,4) = substr( '" + var_months + "' ,1,4)")
+    L.append(';')
+    return L
+
 def output_pdm(pdm_path, folder_arg, schema_filter):
     tbid, tables, refs = parse_pdm_with_notes(pdm_path)
     if not tables:
@@ -309,37 +350,27 @@ def output_pdm(pdm_path, folder_arg, schema_filter):
 
     # --- ETL chains from arrows ---
     if refs:
-        chain_refs = {}
+        target_refs = {}
         for ref in refs:
-            child = tbid.get(ref["child_id"])
+            child = tbid.get(ref['child_id'])
             if not child: continue
-            if schema_filter and get_layer(child["schema"]) != schema_filter: continue
-            parent = tbid.get(ref["parent_id"])
+            if schema_filter and get_layer(child['schema']) != schema_filter: continue
+            parent = tbid.get(ref['parent_id'])
             if not parent: continue
-            ckey = get_chain_key(child["name"])
-            chain_refs.setdefault(ckey, []).append(ref)
+            tid = ref['child_id']
+            target_refs.setdefault(tid, []).append(ref)
+        written_tids = set()
+        for tid, trefs in sorted(target_refs.items()):
+            if tid in written_tids: continue
+            written_tids.add(tid)
+            child = tbid[tid]
+            if not child: continue
+            fname = child['name'] + '.sql'
+            fp = os.path.join(cdir, fname)
+            out = gen_merged_etl(trefs, tbid, VAR_MONTHS)
+            with open(fp, 'w', encoding='utf-8') as f: f.write(chr(10).join(out))
+            print('Written: ' + fp)
 
-        for ckey in sorted(chain_refs.keys()):
-            fp = os.path.join(cdir, ckey + ".sql")
-            out = [
-                "-- ETL from Power Designer PDM (Arrow-based)",
-                "-- ******************************************************************** --",
-                "-- Data Chain: " + ckey,
-                "-- author: \u6211\u662f\u8c01",
-                "-- create time: " + now,
-                "-- ******************************************************************** --",
-                "",
-                "-- ===== Data flow based on PDM arrows =====",
-                ""
-            ]
-            srefs = sorted(chain_refs[ckey],
-                key=lambda r: LAYERS.index(get_layer(tbid[r["parent_id"]]["schema"]))
-                if get_layer(tbid[r["parent_id"]]["schema"]) in LAYERS else 99)
-            for ref in srefs:
-                out.extend(gen_etl(ref, tbid))
-            with open(fp, "w", encoding="utf-8") as f:
-                f.write("\n".join(out))
-            print("Written: " + fp)
     else:
         print("Note: No reference arrows in PDM. Falling back to name-based chain grouping.")
         cg = {}
