@@ -80,7 +80,7 @@ def parse_pdm(path: str | Path):
         tables.append(table)
         by_id[table_id] = table
     refs = []
-    for match in re.finditer(r"<o:Reference[^>]*>(.*?)</o:Reference>", content, re.S):
+    for match in re.finditer(r'<o:Reference(?:\s[^>]*)?>(.*?)</o:Reference>', content, re.S):
         body = match.group(1)
         parent = re.search(r'<c:ParentTable>.*?<o:Table\s+Ref="([^"]+)"', body, re.S)
         child = re.search(r'<c:ChildTable>.*?<o:Table\s+Ref="([^"]+)"', body, re.S)
@@ -93,6 +93,21 @@ def parse_pdm(path: str | Path):
                 joins.append((column_owner[found[0]][1], column_owner[found[-1]][1]))
         refs.append({"parent_id": parent.group(1), "child_id": child.group(1),
                      "join_cols": joins, "code": _tag(body, "Code")})
+    # PowerDesigner traceability arrows: Object2 is the source and Object1 the
+    # dependent target. They prove a dependency, never a JOIN or field mapping.
+    seen = {(item["parent_id"], item["child_id"]) for item in refs}
+    for match in re.finditer(r'<o:ExtendedDependency\s+Id="[^"]+">(.*?)</o:ExtendedDependency>', content, re.S):
+        body = match.group(1)
+        target = re.search(r'<c:Object1>.*?<o:Table\s+Ref="([^"]+)"', body, re.S)
+        source = re.search(r'<c:Object2>.*?<o:Table\s+Ref="([^"]+)"', body, re.S)
+        if not source or not target:
+            continue
+        pair = (source.group(1), target.group(1))
+        if pair[0] not in by_id or pair[1] not in by_id or pair[0] == pair[1] or pair in seen:
+            continue
+        refs.append({"parent_id": pair[0], "child_id": pair[1],
+                     "join_cols": [], "code": "ExtendedDependency"})
+        seen.add(pair)
     return by_id, tables, refs
 
 

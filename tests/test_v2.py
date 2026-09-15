@@ -99,6 +99,19 @@ class V2SafetyTests(unittest.TestCase):
                                              "distribution_reason": "高基数"}}}
         self.assertIn("NEED_CONFIRM", "\n".join(gen_ddl(table, wrong)))
 
+    def test_extended_dependency_direction_is_source_to_target(self):
+        xml = PDM.split("<o:Reference>")[0] + """
+        <o:ExtendedDependency Id="x1">
+          <c:Object1><o:Table Ref="t3"/></c:Object1>
+          <c:Object2><o:Table Ref="t1"/></c:Object2>
+        </o:ExtendedDependency></o:Model>"""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "model.pdm"
+            path.write_text(xml, encoding="utf-8")
+            _, _, refs = parse_pdm(path)
+            self.assertEqual([(item["parent_id"], item["child_id"]) for item in refs], [("t1", "t3")])
+            self.assertEqual(refs[0]["join_cols"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

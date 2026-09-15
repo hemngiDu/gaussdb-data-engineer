@@ -39,6 +39,7 @@ python -m unittest discover -s tests -v
 - `agents/`：DDL、ETL、SQL Reviewer、性能和 PDM 专项角色。
 - `references/`：分层、SQL 风格、安全推断、分布键、评审、性能与排障指南。
 - `scripts/pdm_to_gaussdb.py`：安全 PDM → DDL/ETL 转换器。
+  识别 Reference 与 ExtendedDependency 表依赖；依赖箭头本身不作为 JOIN KEY。
 - `scripts/sql_linter.py`：SQL Doctor，支持文本和 JSON 输出。
 - `scripts/validate_pdm_output.py`：生成结果校验器。
 - `tests/`：标准库自动化测试。
