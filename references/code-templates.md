@@ -1,160 +1,30 @@
-# SQL ����ģ��
+# SQL 代码模板（评审起点）
 
-## ģ�� A: irpt �� dwi ��ϴ
+以下占位符必须先替换并通过校验，不代表可直接执行的业务规则。
 
-`sql
+```sql
 -- DWI sql
 -- ******************************************************************** --
--- author: 我是�?
--- create time: {datetime}
--- ******************************************************************** --
---drop table if exists dwi.dwi_{granularity}_{business};
-
-/*==============================================================*/
-/* Table: dwi.dwi_{granularity}_{business}                      */
-/*==============================================================*/
-create table if not exists dwi.dwi_{granularity}_{business}
-(
-    months          VARCHAR(50)     comment '�·�'
-   ,dept_one        VARCHAR(100)    comment 'һ������'
-   ,dept_two        VARCHAR(100)    comment '��������'
-   ,amount_val      DECIMAL(18, 4)  comment '���?'
-)WITH
-(   orientation = column,
-    compression = low,
-    colversion = 2.0,
-    enable_delta = false
-)DISTRIBUTE BY HASH (dept_two)
-comment '���ı���';
-
------ԭ������ɾ��---------
-delete 
-from dwi.dwi_{granularity}_{business}
-where substr(months,1,4) = substr('',1,4)
-;
-
-----------�����ݲ���------------
-insert into dwi.dwi_{granularity}_{business}
-(
-    months                  -- '�·�'
-   ,dept_one                -- 'һ������'
-   ,dept_two                -- '��������'
-   ,amount_val              -- '���?'
-)
-select org.months          -- �·�
-       ,org.dept_one       -- һ������
-       ,org.dept_two       -- ��������
-       ,src.amount_val     -- ���?
-from irpt.irpt_{granularity}_{business}_his src
-inner join dwi.dwi_org_person org
-    on src.months = org.months
-    and src.dept_one = org.dept_one
-where substr(org.months,1,4) = substr('',1,4)
-;
-`
-
-## ģ�� B: dwi �� dws �ۺ�
-
-`sql
--- DWS sql
--- ******************************************************************** --
--- author: 我是�?
--- create time: {datetime}
+-- author: 我是谁
+-- create time: {yyyy/mm/dd hh24:mi:ss}
 -- ******************************************************************** --
 
-/*==============================================================*/
-/* Table: dws.dws_{granularity}_{business}                      */
-/*==============================================================*/
-create table if not exists dws.dws_{granularity}_{business}
+create table if not exists dwi.dwi_example
 (
-    months                   VARCHAR(50)     comment '�·�'
-   ,dept_one                 VARCHAR(100)    comment 'һ������'
-   ,same_amount              DECIMAL(18, 4)  comment 'ͬ�ڽ��?'
-   ,actual_amount            DECIMAL(18, 4)  comment 'ʵ�ʽ��?'
-   ,target_amount            DECIMAL(18, 4)  comment 'Ŀ����'
-   ,same_amount_total        DECIMAL(18, 4)  comment '�ۼ�ͬ�ڽ��?'
-   ,actual_amount_total      DECIMAL(18, 4)  comment '�ۼ�ʵ�ʽ��?'
-   ,target_amount_total      DECIMAL(18, 4)  comment '�ۼ�Ŀ����'
-)WITH
-(   orientation = column,
-    compression = low,
-    colversion = 2.0,
-    enable_delta = false
-)DISTRIBUTE BY HASH (dept_two)
-comment '���ܿ���';
+    business_id      BIGINT          comment '业务编号'
+   ,amount_value     DECIMAL(20,6)  comment '金额'
+)WITH (orientation = column, compression = low)
+-- NEED_CONFIRM: 根据基数与关联策略确认分布键
+-- DISTRIBUTE BY HASH (<key>)
+comment '示例表';
 
-delete from dws.dws_{granularity}_{business}
-where substr(months,1,4) = substr('',1,4)
-;
+-- NEED_CONFIRM: 明确目标删除范围和来源过滤范围
+-- delete from dwi.dwi_example where <target_predicate>;
+-- insert into dwi.dwi_example
+-- (business_id, amount_value)
+-- select src.business_id, src.amount_value
+-- from irpt.irpt_example src
+-- where <source_predicate>;
+```
 
-insert into dws.dws_{granularity}_{business}
-(
-    months
-   ,dept_one
-   ,same_amount
-   ,actual_amount
-   ,target_amount
-   ,same_amount_total
-   ,actual_amount_total
-   ,target_amount_total
-)
-select org.months
-       ,org.dept_one
-       ,sum(profit.same_amount)   over(partition by org.dept_one,org.dept_two order by org.months)
-           as same_amount
-       ,sum(profit.actual_amount) over(partition by org.dept_one,org.dept_two order by org.months)
-           as actual_amount
-       ,sum(profit.target_amount) over(partition by substr(org.months,1,7),org.dept_one)
-           as target_amount
-       ,sum(profit.same_amount)   over(partition by org.dept_one)
-           as same_amount_total
-       ,sum(profit.actual_amount) over(partition by org.dept_one)
-           as actual_amount_total
-       ,sum(profit.target_amount) over(partition by org.dept_one)
-           as target_amount_total
-from dwi.dwi_{granularity}_{business} profit
-left join dwi.dwi_org_person org
-    on profit.months = org.months
-    and profit.dept_one = org.dept_one
-where substr(org.months,1,4) = substr('',1,4)
-;
-`
-
-## ģ�� C: DDL �ֲ�ʽ����
-
-`sql
-create table if not exists {schema}.{table_name}
-(
-    id             VARCHAR(50)      comment '����'
-   ,parent_id      VARCHAR(50)      comment '�ϼ�����'
-   ,name           VARCHAR(200)     comment '����'
-   ,level_num      INTEGER          comment '�㼶'
-   ,is_leaf        INTEGER          comment '�Ƿ�Ҷ�ӽڵ�'
-)WITH
-(   orientation = column,
-    compression = low,
-    colversion = 2.0,
-    enable_delta = false
-)DISTRIBUTE BY REPLICATION
-comment 'ά�ȱ�';
-`
-
-## NVL ģʽ
-nvl(column_name,'-')    as column_name -- 'ע��'
-
-## IF ģʽ����� CASE WHEN��
-if(condition, value_if_true, value_if_false) as column_name -- 'ע��'
-
-## �ָ�����ʽ
-----------����˵��---------------
-delete
-from schema.table
-where ...
-;
--------------�����ݲ���------------
-insert into schema.table
-
-## ����ʹ��
-${var_months} - �·ݱ���
-substr(months,1,4) = substr( '${var_months}' ,1,4)  -- ȡ�����
-substr(months,1,7) = substr( '${var_months}' ,1,7)  -- ȡ�¹���
+参见 [安全规则](safety-rules.md) 和 [ETL 模式](etl-patterns.md)。

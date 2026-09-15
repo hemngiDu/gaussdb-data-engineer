@@ -1,4 +1,4 @@
 interface:
-  display_name: "GaussDBÊı¾İ¹¤³ÌÊ¦"
-  short_description: "GaussDBÊı¾İ¿ª·¢×¨ÓÃskill£¬ÓÃÀ´°´¹Ì¶¨·ç¸ñÉú³ÉSQL´úÂë"
-  default_prompt: "°´ÄãµÄGaussDBÊı¾İ¹¤³Ì·ç¸ñĞ´SQL"
+  display_name: "GaussDB æ•°æ®å·¥ç¨‹å¸ˆ V2"
+  short_description: "å®‰å…¨ç”Ÿæˆã€è¯„å®¡å’Œè¯Šæ–­ GaussDB æ•°ä»“ SQL"
+  default_prompt: "è¯·æŒ‰ GaussDB æ•°ä»“å®‰å…¨è§„åˆ™å®Œæˆå¼€å‘æˆ–è¯„å®¡ï¼›æ— æ³•ç¡®è®¤çš„ä¸šåŠ¡è§„åˆ™æ ‡è®° NEED_CONFIRMã€‚"

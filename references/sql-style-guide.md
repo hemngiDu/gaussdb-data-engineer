@@ -1,141 +1,30 @@
-# GaussDB SQL ·ç¸ñÖ¸ÄÏ
+# GaussDB SQL é£æ ¼æŒ‡å—
 
-## ×ÜÌåÔ­Ôò
+ä¿ç•™åŸæœ‰ä¹ æƒ¯ï¼šå…³é”®å­—å°å†™ã€æ ‡è¯†ç¬¦å°å†™ snake_caseã€4 ç©ºæ ¼ç¼©è¿›ã€å­—æ®µå’Œ SELECT åˆ—è¡¨ä½¿ç”¨å‰ç½®é€—å·ã€ä¸­æ–‡è¡Œå°¾æ³¨é‡Šã€å›ºå®šæ–‡ä»¶å¤´ã€‚
 
-- ¹Ø¼ü´ÊĞ¡Ğ´£¨create, table, select, insert, from µÈ£©
-- ±êÊ¶·ûÈ«Ğ¡Ğ´ + snake_case
-- Ëõ½øÓÃ 4 ¿Õ¸ñ
-- Ã¿ĞĞ²»³¬¹ı 120 ×Ö·û
+```sql
+-- DWI sql
+-- ******************************************************************** --
+-- author: æˆ‘æ˜¯è°
+-- create time: {yyyy/mm/dd hh24:mi:ss}
+-- ******************************************************************** --
 
-## DDL ½¨±í
-
-`sql
-/*==============================================================*/
-/* Table: {schema}.{table_name}                                 */
-/*==============================================================*/
-create table if not exists {schema}.{table_name}
+create table if not exists dwi.dwi_example
 (
-    col_big       VARCHAR(200)      comment '´ó×Ö¶Î'
-   ,col_name      VARCHAR(100)      comment 'Ãû³Æ'
-   ,col_code      VARCHAR(50)       comment '±àÂë'
-   ,amount_val    DECIMAL(18, 4)    comment '½ğ¶î'
-   ,cnt_val       INTEGER           comment '¼ÆÊı'
-   ,create_time   TIMESTAMP         comment '´´½¨Ê±¼ä'
-)WITH
-(   orientation = column,
-    compression = low,
-    colversion = 2.0,
-    enable_delta = false
-)DISTRIBUTE BY HASH (distribution_key)
-comment '±íÖĞÎÄÃû';
-`
+    business_id       BIGINT         comment 'ä¸šåŠ¡ç¼–å·'
+   ,amount_value      DECIMAL(20,6) comment 'é‡‘é¢'
+)WITH (orientation = column, compression = low)
+DISTRIBUTE BY HASH (business_id)
+comment 'ä¸šåŠ¡æ˜ç»†';
 
-×Ö¶ÎË³Ğò¹æÔò£º
-1. ÒµÎñ¼ü/Î¬¶È×Ö¶ÎÅÅÇ°£¨²¿ÃÅ¡¢±àÂë¡¢·ÖÀàµÈ£©
-2. ¶ÈÁ¿/½ğ¶î×Ö¶Î¾ÓÖĞ
-3. ¼¼Êõ×Ö¶ÎÅÅºó£¨´´½¨Ê±¼äµÈ£©
-
-## DML ²åÈë
-
-`sql
-insert into {schema}.{table_name}
+insert into dwi.dwi_example
 (
-    col_1                  -- '×Ö¶Î1×¢ÊÍ'
-   ,col_2                  -- '×Ö¶Î2×¢ÊÍ'
+    business_id      -- 'ä¸šåŠ¡ç¼–å·'
+   ,amount_value     -- 'é‡‘é¢'
 )
-select a.col_1              -- ×Ö¶Î1
-       ,a.col_2             -- ×Ö¶Î2
-from {schema}.{source} a
-left join {schema}.{dim} b
-    on a.key = b.key;
-`
-
-## DELETE Ä£Ê½
-
-`sql
-delete 
-from {schema}.{table_name} 
-where substr(months,1,4) = substr('',1,4)
-;
-`
-
-## CASE WHEN
-
-`sql
-CASE {column}
-    WHEN 'A' THEN 'Ôİ´æ'
-    WHEN 'B' THEN 'ÒÑÌá½»'
-    WHEN 'C' THEN 'ÒÑÉóºË'
-END AS ÖĞÎÄ±ğÃû
-`
-
-## JOIN Ğ´·¨
-
-- Ê¹ÓÃ±ğÃû£ºa, b, c, d »òº¬ÒåËõĞ´
-- LEFT JOIN ¶ÔÆë£¬ON Ìõ¼ş»»ĞĞËõ½ø
-- ÓÃ×¢ÊÍ±ê¼ÇÒÑ×¢ÊÍµôµÄ JOIN
-
-`sql
-from sdi.sdi_table_a a
-left join dim.dim_table_b b
-    on a.key = b.key
-left join dim.dim_table_c c
-    on c.foreign = a.key and c.status = 'A'
-`
-
-## ×¢ÊÍ¹æ·¶
-
-- ×Ö¶Î×¢ÊÍ£ºµ¥ÒıºÅÖĞÎÄ£¬Èç comment 'ÔÂ·İ'
-- ĞĞÎ²×¢ÊÍ£º-- 'ÖĞÎÄ'
-- Ñ¡ÔñÁĞ×¢ÊÍ£ºs ÖĞÎÄÃû
-- ´úÂë¶Î×¢ÊÍ£º-----ËµÃ÷ÎÄ×Ö-------
-- ×¢ÊÍµôµÄ×Ö¶Î±£Áô£º--,column_name
-- ×¢ÊÍµôµÄ JOIN ±£Áô£º-- left join ...
-
-
-## ÁÙÊ±±íÄ£Ê½
-```
-create temporary table tmp_{business}
-WITH (orientation = column,compression = low) as
---drop table if exists tmp_{business};
-(
-    select ...
-)
-;
---drop table if exists tmp_{business};
+select src.business_id     as business_id   -- ä¸šåŠ¡ç¼–å·
+      ,src.amount_value    as amount_value  -- é‡‘é¢
+from irpt.irpt_example src;
 ```
 
-## NVL ¿ÕÖµ´¦Àí
-```
-nvl(column_name,'-')    as column_name -- '×¢ÊÍ'
-```
-
-## IF Âß¼­
-```
-if(condition, value_if_true, value_if_false) as column_name
-```
-
-## ±äÁ¿¸ñÊ½
-```
-${var_months}   -- ÔÂ·İ±äÁ¿
-${var_date}     -- ÈÕÆÚ±äÁ¿
-substr('${var_months}',1,4)  -- È¡Äê£¨×¢Òâ±äÁ¿Ç°ºóÓĞ¿Õ¸ñ£©
-substr('${var_months}',1,7)  -- È¡ÔÂ
-```
-
-## DELETE + INSERT ·Ö¸ô·û
-```
-----------Ô­ÓĞÊı¾İÉ¾³ı---------------
-delete
-from schema.table
-where substr(months,1,4) = substr( '${var_months}' ,1,4)
-;
-
--------------ĞÂÊı¾İ²åÈë------------
-insert into schema.table
-(
-     col_1     -- '×Ö¶Î×¢ÊÍ'
-    ,col_2     -- '×Ö¶Î×¢ÊÍ'
-)
-select ...;
-```
+ç¤ºä¾‹ä¸­çš„ HASH é”®å’Œé‡‘é¢ç±»å‹åªç”¨äºå±•ç¤ºå†™æ³•ï¼Œå®é™…é¡¹ç›®å¿…é¡»éµå¾ª PDM ç±»å‹å’Œ [åˆ†å¸ƒç­–ç•¥](distribution-key-guide.md)ã€‚DELETE+INSERT åˆ†éš”çº¿å¯æ²¿ç”¨â€œåŸæœ‰æ•°æ®åˆ é™¤ï¼æ–°æ•°æ®æ’å…¥â€ï¼Œä½†çª—å£ä¸è¿‡æ»¤æ¡ä»¶é¡»æœ‰ä¸šåŠ¡ä¾æ®ã€‚NULL é»˜è®¤ä¿æŒ NULLï¼›ä¸è‡ªåŠ¨å¥—ç”¨ `nvl`ã€‚

@@ -1,0 +1,14 @@
+{
+  "tables": {
+    "dwi.dwi_order_detail": {"storage": "column", "distribution": {"type": "hash", "keys": ["order_id"]}, "distribution_reason": "高基数、低倾斜，且与主要大表 JOIN 键一致"},
+    "dwi.dwi_region_dim": {"distribution": "replication", "distribution_reason": "小维表且更新频率低"}
+  },
+  "etl": {
+    "dwi.dwi_order_detail": {
+      "incremental_predicate": "months = '${var_months}'",
+      "source_predicate": "t1.months = '${var_months}'",
+      "mappings": {"order_id": "t1.order_id", "months": "t1.months", "amount": "t1.order_amount"},
+      "joins": {"irpt.irpt_region": {"type": "left", "on": ["t1.region_id = t2.region_id"], "reason": "区域源按 region_id 唯一，缺失区域需保留订单"}}
+    }
+  }
+}

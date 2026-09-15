@@ -1,458 +1,278 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import re, sys, os, argparse
-from datetime import datetime
+"""PowerDesigner PDM to reviewable GaussDB DDL/ETL.
 
-TYPE_MAP = {
-    "nvarchar": "VARCHAR", "varchar": "VARCHAR", "char": "VARCHAR",
-    "decimal": "DECIMAL", "numeric": "DECIMAL", "number": "DECIMAL",
-    "int": "INTEGER", "integer": "INTEGER",
-    "smallint": "INTEGER", "bigint": "INTEGER",
-    "date": "DATE", "datetime": "TIMESTAMP", "timestamp": "TIMESTAMP",
-    "float": "DOUBLE PRECISION", "double": "DOUBLE PRECISION",
-    "text": "TEXT", "clob": "TEXT", "blob": "BYTEA",
-}
+V2 never invents distribution keys, joins, incremental predicates or NULL
+defaults. Missing business rules remain visible as NEED_CONFIRM/TODO markers.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
 
 LAYERS = ["irpt", "dwi", "dwm", "dws", "ads"]
-CHAIN_SUFFIXES = ["_his", "_t1", "_t2", "_bak", "_tmp"]
-VAR_MONTHS = "${var_months}"
+TYPE_MAP = {
+    "nvarchar": "VARCHAR", "varchar": "VARCHAR", "char": "CHAR",
+    "decimal": "DECIMAL", "numeric": "NUMERIC", "number": "NUMERIC",
+    "tinyint": "SMALLINT", "smallint": "SMALLINT", "int": "INTEGER",
+    "integer": "INTEGER", "bigint": "BIGINT", "date": "DATE",
+    "datetime": "TIMESTAMP", "timestamp": "TIMESTAMP",
+    "float": "DOUBLE PRECISION", "double": "DOUBLE PRECISION",
+    "text": "TEXT", "clob": "TEXT", "blob": "BYTEA", "boolean": "BOOLEAN",
+}
 
 
-def extract_notes(desc_xml):
-    if not desc_xml or len(desc_xml.strip()) < 10: return "", ""
-    text = desc_xml.replace("&#39;", "'")
-    gbk_bytes = []; i = 0
-    while i < len(text):
-        if i + 3 < len(text) and text[i] == chr(92) and text[i+1] == "'":
-            try: gbk_bytes.append(int(text[i+2:i+4], 16))
-            except: pass
-            i += 4
-        elif text[i] == chr(92): i += 1
-        else: i += 1
-    cn = bytes(gbk_bytes).decode("gbk", errors="replace") if gbk_bytes else ""
-    plain = re.sub(r"\\(?:[a-z]+[0-9]*|\\*)", " ", text)
-    plain = re.sub(r"[{}]", " ", plain)
-    plain = re.sub(r"\\s+", " ", plain).strip()
-    lines = [l.strip() for l in plain.split(chr(10)) if l.strip()]
-    sql_lines = [l for l in lines if any(k in l.lower() for k in ["like ","nvl(","and ","or ","is null","in ("])]
-    # Decode CHR(92)-quote-hex sequences in SQL (same as Chinese text decoding)
-    decoded_sql = []
-    for sql_line in sql_lines:
-        i2 = 0
-        out = []
-        while i2 < len(sql_line):
-            if i2 + 3 < len(sql_line) and sql_line[i2] == chr(92) and sql_line[i2+1] == "'":
-                try: out.append(bytes.fromhex(sql_line[i2+2:i2+4]).decode('gbk'))
-                except:
-                    # Collect consecutive hex bytes and decode as group
-                    hex_buf = [sql_line[i2+2:i2+4]]
-                    j = i2 + 4
-                    while j + 3 < len(sql_line) and sql_line[j] == chr(92) and sql_line[j+1] == "'":
-                        hex_buf.append(sql_line[j+2:j+4])
-                        j += 4
-                    try: out.append(bytes.fromhex(''.join(hex_buf)).decode('gbk'))
-                    except: out.append('[' + ','.join(hex_buf) + ']')
-                    i2 = j
-            else: out.append(sql_line[i2]); i2 += 1
-        decoded_sql.append(''.join(out))
-    sql_lines = decoded_sql
-    return cn, chr(10).join(sql_lines)
+def _tag(block: str, name: str) -> str:
+    match = re.search(rf"<a:{re.escape(name)}>(.*?)</a:{re.escape(name)}>", block, re.S)
+    return match.group(1).strip() if match else ""
 
-def parse_pdm_with_notes(filepath):
-    tbid, tables, refs = parse_pdm(filepath)
-    with open(filepath, "r", encoding="utf-8", errors="replace") as f: xmlc = f.read()
-    for t in tables:
-        code = (t["schema"] + "." + t["name"] if t["schema"] else t["name"]).lower()
-        pat = "<o:Table[^>]*>.*?<a:Code>" + re.escape(code) + "</a:Code>.*?</o:Table>"
-        tbl_m = re.search(pat, xmlc, 16)
-        if tbl_m:
-            dm = re.search("<a:Description>(.*?)</a:Description>", tbl_m.group(0), 16)
-            if dm:
-                cn, sql = extract_notes(dm.group(1))
-                if cn or sql: t["notes_text"] = cn; t["notes_sql"] = sql
 
-    # Parse ExtendedDependency directly (data arrows, NOT Symbol wrapper)
-    if not refs:
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f: xmlc = f.read()
-        pat_ext = re.compile(r'<o:ExtendedDependency[^>]*>(.*?)</o:ExtendedDependency>', re.DOTALL)
-        for m in pat_ext.finditer(xmlc):
-            ex = m.group(1)
-            if '<a:ObjectID>' not in ex: continue
-            om1 = re.search(r'<c:Object1>.*?<o:Table\s+Ref="([^"]+)"', ex, re.DOTALL)
-            om2 = re.search(r'<c:Object2>.*?<o:Table\s+Ref="([^"]+)"', ex, re.DOTALL)
-            if om1 and om2:
-                src_tid, dst_tid = om1.group(1), om2.group(1)
-                if src_tid != dst_tid and src_tid in tbid and dst_tid in tbid:
-                    exists = any(r['parent_id']==src_tid and r['child_id']==dst_tid for r in refs)
-                    if not exists:
-                        refs.append({'parent_id':dst_tid, 'child_id':src_tid, 'join_cols':[], 'code':'ExtDep'})
-        if refs:
-            print('Found', len(refs), 'ExtendedDependency arrows')
+def map_type(raw: str, length: str = "") -> tuple[str, str]:
+    if not raw:
+        return "VARCHAR(1)", "NEED_CONFIRM: PDM 字段缺少类型"
+    raw = raw.strip().lower()
+    base_name = re.match(r"[a-z]+", raw)
+    source_base = base_name.group(0) if base_name else ""
+    mapped = TYPE_MAP.get(source_base)
+    if not mapped:
+        return "VARCHAR(1)", f"NEED_CONFIRM: 未识别的 PDM 字段类型 {raw}"
+    precision = ""
+    match = re.search(r"\(([^)]+)\)", raw)
+    if match:
+        precision = match.group(1)
+    elif length and mapped in {"VARCHAR", "CHAR"}:
+        precision = length
+    if mapped in {"VARCHAR", "CHAR"} and not precision:
+        return f"{mapped}(1)", "NEED_CONFIRM: 字符类型缺少长度"
+    if precision and not re.fullmatch(r"\d+(?:\s*,\s*\d+)?", precision):
+        return "VARCHAR(1)", f"NEED_CONFIRM: 非法类型精度 {raw}"
+    return f"{mapped}({precision})" if precision else mapped, ""
 
-    return tbid, tables, refs
 
-def parse_pdm(filepath):
-    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read()
-    tables_by_id = {}
-    tables = []
-    pat_table = re.compile(r'<o:Table\s+[^>]*Id="([^"]+)"[^>]*>(.*?)</o:Table>', re.DOTALL)
-    for m in pat_table.finditer(content):
-        tid = m.group(1)
-        tx = m.group(2)
-        c = re.search(r"<a:Code>([^<]+)</a:Code>", tx)
-        n = re.search(r"<a:Name>([^<]+)</a:Name>", tx)
-        if not c: continue
-        tc = c.group(1).strip()
-        tn = n.group(1).strip() if n else ""
-        schema, tname = "", tc.lower()
-        if "." in tc:
-            parts = tc.split(".", 1)
-            schema, tname = parts[0].lower(), parts[1].lower()
-        cols = []
-        pat_col = re.compile(r'<o:Column\s+[^>]*Id="([^"]+)"[^>]*>(.*?)</o:Column>', re.DOTALL)
-        for cm in pat_col.finditer(tx):
-            col_id = cm.group(1)
-            cx = cm.group(2)
-            cc = re.search(r"<a:Code>([^<]+)</a:Code>", cx)
-            cn = re.search(r"<a:Name>([^<]+)</a:Name>", cx)
-            ct = re.search(r"<a:DataType>([^<]+)</a:DataType>", cx)
-            cl = re.search(r"<a:Length>([^<]+)</a:Length>", cx)
-            if not cc: continue
-            code = cc.group(1).strip().lower()
-            name_ = cn.group(1).strip() if cn else code
-            raw = ct.group(1).strip().lower() if ct else "varchar"
-            base = "VARCHAR"
-            for k, v in TYPE_MAP.items():
-                if raw.startswith(k): base = v; break
-            prec = ""
-            pm = re.search(r"\(([^)]+)\)", raw)
-            if pm: prec = pm.group(1)
-            elif cl and cl.group(1) and base == "VARCHAR": prec = cl.group(1)
-            cols.append({"id": col_id, "code": code, "name": name_, "type": base, "precision": prec})
-        if cols:
-            tbl = {"id": tid, "schema": schema, "name": tname, "cname": tn, "columns": cols}
-            tables_by_id[tid] = tbl
-            tables.append(tbl)
-    # Parse references (arrows)
+def parse_pdm(path: str | Path):
+    content = Path(path).read_text(encoding="utf-8", errors="replace")
+    tables, by_id, column_owner = [], {}, {}
+    for match in re.finditer(r'<o:Table\s+[^>]*Id="([^"]+)"[^>]*>(.*?)</o:Table>', content, re.S):
+        table_id, body = match.groups()
+        code = _tag(body, "Code")
+        if not code:
+            continue
+        schema, _, name = code.lower().rpartition(".")
+        if not schema:
+            schema, name = "", code.lower()
+        columns = []
+        for col_match in re.finditer(r'<o:Column\s+[^>]*Id="([^"]+)"[^>]*>(.*?)</o:Column>', body, re.S):
+            column_id, col_body = col_match.groups()
+            col_code = _tag(col_body, "Code").lower()
+            if not col_code:
+                continue
+            data_type, warning = map_type(_tag(col_body, "DataType"), _tag(col_body, "Length"))
+            column = {"id": column_id, "code": col_code, "name": _tag(col_body, "Name") or col_code,
+                      "type": data_type, "type_warning": warning}
+            columns.append(column)
+            column_owner[column_id] = (table_id, col_code)
+        table = {"id": table_id, "schema": schema, "name": name,
+                 "cname": _tag(body, "Name") or name, "columns": columns}
+        tables.append(table)
+        by_id[table_id] = table
     refs = []
-    pat_ref = re.compile(r"<o:Reference[^>]*>(.*?)</o:Reference>", re.DOTALL)
-    pat_code = re.compile(r"<a:Code>([^<]+)</a:Code>")
-    for ref_m in pat_ref.finditer(content):
-        rx = ref_m.group(1)
-        parent_id = None
-        pm1 = re.search(r"<c:ParentTable>.*?<o:Table\s+Ref=\"([^\"]+)\"", rx, re.DOTALL)
-        if pm1: parent_id = pm1.group(1)
-        else:
-            pm1b = re.search(r"<a:ParentTable[^>]*>([^<]+)", rx)
-            if pm1b: parent_id = pm1b.group(1).strip()
-        child_id = None
-        pm2 = re.search(r"<c:ChildTable>.*?<o:Table\s+Ref=\"([^\"]+)\"", rx, re.DOTALL)
-        if pm2: child_id = pm2.group(1)
-        else:
-            pm2b = re.search(r"<a:ChildTable[^>]*>([^<]+)", rx)
-            if pm2b: child_id = pm2b.group(1).strip()
-        if not parent_id or not child_id: continue
-        if parent_id not in tables_by_id or child_id not in tables_by_id: continue
-        join_cols = []
-        pat_join = re.compile(r"<o:ReferenceJoin[^>]*>(.*?)</o:ReferenceJoin>", re.DOTALL)
-        for jm in pat_join.finditer(rx):
-            jx = jm.group(1)
-            pc = re.search(r"<o:Column\s+Ref=\"([^\"]+)\"", jx)
-            cidx = jx.find("<c:ChildColumn>")
-            cc = None
-            if cidx >= 0:
-                cc = re.search(r"<o:Column\s+Ref=\"([^\"]+)\"", jx[cidx:])
-            if not cc:
-                cc = re.search(r"<o:Column\s+Ref=\"([^\"]+)\"", jx)
-            if pc and cc:
-                join_cols.append((pc.group(1), cc.group(1)))
-        rc = pat_code.search(rx)
-        ref_code = rc.group(1).strip() if rc else ""
-        refs.append({"parent_id": parent_id, "child_id": child_id, "join_cols": join_cols, "code": ref_code})
-    return tables_by_id, tables, refs
+    for match in re.finditer(r"<o:Reference[^>]*>(.*?)</o:Reference>", content, re.S):
+        body = match.group(1)
+        parent = re.search(r'<c:ParentTable>.*?<o:Table\s+Ref="([^"]+)"', body, re.S)
+        child = re.search(r'<c:ChildTable>.*?<o:Table\s+Ref="([^"]+)"', body, re.S)
+        if not parent or not child or parent.group(1) not in by_id or child.group(1) not in by_id:
+            continue
+        joins = []
+        for join in re.finditer(r"<o:ReferenceJoin[^>]*>(.*?)</o:ReferenceJoin>", body, re.S):
+            found = re.findall(r'<o:Column\s+Ref="([^"]+)"', join.group(1))
+            if len(found) >= 2 and found[0] in column_owner and found[-1] in column_owner:
+                joins.append((column_owner[found[0]][1], column_owner[found[-1]][1]))
+        refs.append({"parent_id": parent.group(1), "child_id": child.group(1),
+                     "join_cols": joins, "code": _tag(body, "Code")})
+    return by_id, tables, refs
 
-def get_chain_key(name):
-    for lp in LAYERS:
-        if name.startswith(lp + "_"):
-            name = name[len(lp) + 1:]; break
-    for sfx in CHAIN_SUFFIXES:
-        if name.endswith(sfx):
-            name = name[:-len(sfx)]; break
-    return name
 
-def get_layer(schema):
-    m = {"irpt":"irpt","dwi":"dwi","dwm":"dwm","dws":"dws","ads":"ads","sdi_wdtmp":"irpt","dim":"dwi"}
-    return m.get(schema, "dwi")
+def layer_for(table: dict) -> str:
+    return {"sdi_wdtmp": "irpt", "dim": "dwi"}.get(
+        table["schema"], table["schema"] if table["schema"] in LAYERS else "dwi")
 
-def gen_ddl(tbl, layer):
-    cname = tbl["cname"] if tbl["cname"] else tbl["name"]
-    sname = layer if tbl["schema"] in ["sdi_wdtmp","dim"] else (tbl["schema"] if tbl["schema"] else layer)
-    tn = tbl["name"]
-    full = ("%s.%s" % (sname, tn)) if (layer and tn.startswith(layer + "_")) else ("%s.%s_%s" % (sname, layer, tn))
-    dk = tbl["columns"][0]["code"] if tbl["columns"] else "id"
-    L = ["", "/*" + "=" * 62 + "*/", "/* Table: %s */" % full, "/*" + "=" * 62 + "*/", "create table if not exists %s" % full, "("]
-    for i, col in enumerate(tbl["columns"]):
-        ct = col["type"]
-        if col["precision"]: ct = "%s(%s)" % (col["type"], col["precision"])
-        sep = "    " if i == 0 else "   ,"
-        cl = "%-5s%-30s %-18s" % (sep, col["code"], ct)
-        if col["name"]: cl += " comment " + chr(39) + (col["name"] if col["name"] != col["code"] else col["code"]) + chr(39)
-        L.append(cl.rstrip())
-    L.extend([")WITH", "\t(", "\t\torientation = column,", "\t\tcompression = low,", "\t\tcolversion = 2.0,", "\t\tenable_delta = false", "\t) DISTRIBUTE BY HASH (%s)" % dk])
-    L.append("COMMENT " + chr(39) + cname + chr(39) + ";")
-    return L
 
-def gen_etl(ref, tbid):
-    parent = tbid.get(ref["parent_id"])
-    child = tbid.get(ref["child_id"])
-    if not parent or not child: return []
-    src = "%s.%s" % (parent["schema"] or "irpt", parent["name"])
-    tgt = "%s.%s" % (child["schema"] or "dwi", child["name"])
-    L = []
-    L.append("")
-    L.append("-- =============================================")
-    L.append("-- Arrow: " + src + " -> " + tgt)
-    if parent.get("notes_text",""): L.append("-- Notes: " + parent["notes_text"])
-    if child.get("notes_text",""): L.append("-- Notes: " + child["notes_text"])
-    if ref["code"]: L.append("-- " + ref["code"])
-    if parent["cname"] and child["cname"]: L.append("-- " + parent["cname"] + " -> " + child["cname"])
-    L.append("-- =============================================")
-    L.append("")
-    L.append("----------\u539f\u6709\u6570\u636e\u5220\u9664---------------")
-    L.append("delete")
-    L.append("from " + tgt)
-    L.append("where substr(months,1,4) = substr( \u0027" + VAR_MONTHS + "\u0027 ,1,4)")
-    L.append(";")
-    L.append("")
-    L.append("-------------\u65b0\u6570\u636e\u63d2\u5165------------")
-    L.append("insert into " + tgt)
-    L.append("(")
-    for i, col in enumerate(child["columns"]):
-        pfx = "    " if i == 0 else "   ,"
-        cmt = " -- \u0027" + col["name"] + "\u0027" if col["name"] and col["name"] != col["code"] else ""
-        L.append("%s%-25s%s" % (pfx, col["code"], cmt))
-    L.append(")")
-    L.append("select")
-    join_map = {}
-    for pc_id, cc_id in ref["join_cols"]:
-        pcc = None; ccc = None
-        for cp in parent["columns"]:
-            if cp["id"] == pc_id: pcc = cp["code"]; break
-        for cc_ in child["columns"]:
-            if cc_["id"] == cc_id: ccc = cc_["code"]; break
-        if pcc and ccc: join_map[ccc] = pcc
-    for i, col in enumerate(child["columns"]):
-        pfx = "     " if i == 0 else "    ,"
-        cmt = " -- " + col["name"] if col["name"] and col["name"] != col["code"] else ""
-        if col["code"] in join_map:
-            L.append("%ssrc.%-22s%s" % (pfx, col["code"], cmt))
-        else:
-            jc = join_map.get(col["code"], col["code"])
-            L.append("%snvl(src.%-15s,0) as %-20s%s" % (pfx, jc, col["code"], cmt))
-    L.append("from " + src + " src")
-    sn = parent.get("notes_sql","") or child.get("notes_sql","")
-    if sn: L.append("where " + sn)
-    if ref["join_cols"]:
-        conds = []
-        for pc_id, cc_id in ref["join_cols"]:
-            pcn = None; ccn = None
-            for cp in parent["columns"]:
-                if cp["id"] == pc_id: pcn = cp["code"]; break
-            for cc_ in child["columns"]:
-                if cc_["id"] == cc_id: ccn = cc_["code"]; break
-            if pcn and ccn: conds.append("src." + pcn + " = " + tgt + "." + ccn)
-        if conds:
-            L.append("where " + " and ".join(conds))
-    L.append(";")
-    return L
+def full_name(table: dict) -> str:
+    layer = layer_for(table)
+    schema = layer if table["schema"] in {"", "sdi_wdtmp", "dim"} else table["schema"]
+    name = table["name"] if table["name"].startswith(layer + "_") else f"{layer}_{table['name']}"
+    return f"{schema}.{name}"
 
-def gen_merged_etl(trefs, tbid, var_months):
-    if not trefs: return []
-    child = tbid[trefs[0]['child_id']]
-    if not child: return []
-    tgt = '%s.%s' % (child['schema'] or 'dwi', child['name'])
-    L = []
-    L.append('')
-    L.append('-- Merge: ' + ' + '.join([tbid[r['parent_id']]['schema']+'.'+tbid[r['parent_id']]['name'] for r in trefs if r['parent_id'] in tbid]) + ' -> ' + tgt)
-    L.append('')
-    L.append('----------\u539f\u6709\u6570\u636e\u5220\u9664---------------')
-    L.append('delete')
-    L.append('from ' + tgt)
-    L.append("where substr(months,1,4) = substr( '" + var_months + "' ,1,4)")
-    L.append(';')
-    L.append('')
-    L.append('-------------\u65b0\u6570\u636e\u63d2\u5165------------')
-    L.append('insert into ' + tgt)
-    L.append('(')
-    for i, col in enumerate(child['columns']):
-        pfx = '    ' if i == 0 else '   ,'
-        cmt = " -- '" + col['name'] + "'" if col['name'] and col['name'] != col['code'] else ''
-        L.append('%s%-25s%s' % (pfx, col['code'], cmt))
-    L.append(')')
-    L.append('select')
-    main_parent = tbid[trefs[0]['parent_id']]
-    for i, col in enumerate(child['columns']):
-        pfx = '     ' if i == 0 else '    ,'
-        cmt = ' -- ' + col['name'] if col['name'] and col['name'] != col['code'] else ''
-        L.append('%st1.%-23s%s' % (pfx, col['code'], cmt))
-    L.append('from ' + main_parent['schema'] + '.' + main_parent['name'] + ' t1  -- ' + main_parent.get('cname',''))
-    for idx, r in enumerate(trefs[1:], 2):
-        dp = tbid.get(r['parent_id'])
-        if not dp: continue
-        alias = 't' + str(idx)
-        L.append('left join ' + dp['schema'] + '.' + dp['name'] + ' ' + alias + '  -- ' + dp.get('cname',''))
-        common = sorted(set(c['code'] for c in main_parent['columns'] for d in dp['columns'] if c['code'] == d['code']))[:5]
-        if common:
-            L.append('    on ' + ' and '.join('t1.' + c + ' = ' + alias + '.' + c for c in common))
-    L.append("where substr(t1.months,1,4) = substr( '" + var_months + "' ,1,4)")
-    L.append(';')
-    return L
 
-def output_pdm(pdm_path, folder_arg, schema_filter):
-    tbid, tables, refs = parse_pdm_with_notes(pdm_path)
-    if not tables:
-        print("No tables found in PDM", file=sys.stderr)
-        sys.exit(1)
+def gen_ddl(table: dict, config: dict) -> list[str]:
+    name = full_name(table)
+    cfg = config.get("tables", {}).get(name, {})
+    lines = ["", "/*" + "=" * 62 + "*/", f"/* Table: {name} */", "/*" + "=" * 62 + "*/",
+             f"create table if not exists {name}", "("]
+    for index, col in enumerate(table["columns"]):
+        prefix = "    " if index == 0 else "   ,"
+        lines.append(f"{prefix}{col['code']:<30} {col['type']:<20} comment '{col['name'].replace(chr(39), chr(39) * 2)}'")
+        if col["type_warning"]:
+            lines.append(f"   -- {col['type_warning']}: {col['code']}")
+    storage = cfg.get("storage", "column")
+    if storage not in {"column", "row"}:
+        storage = "column"
+        lines.append("-- NEED_CONFIRM: 配置中的存储类型无效")
+    if storage == "column":
+        lines.extend([")WITH", "    (", "        orientation = column,", "        compression = low,",
+                      "        colversion = 2.0,", "        enable_delta = false", "    )"])
+    else:
+        lines.extend([")WITH", "    (", "        orientation = row", "    )"])
+    distribution = cfg.get("distribution")
+    codes = {col["code"] for col in table["columns"]}
+    if distribution == "replication" and cfg.get("distribution_reason"):
+        lines.append("DISTRIBUTE BY REPLICATION")
+    elif (isinstance(distribution, dict) and distribution.get("type") == "hash"
+          and distribution.get("keys") and cfg.get("distribution_reason")
+          and all(key in codes for key in distribution["keys"])):
+        lines.append(f"DISTRIBUTE BY HASH ({', '.join(distribution['keys'])})")
+    else:
+        lines.extend(["-- NEED_CONFIRM: 请根据数据量、基数、关联键和倾斜风险确认分布策略、字段存在性和判断依据",
+                      "-- DISTRIBUTE BY HASH (<distribution_key>)"])
+    lines.append(f"comment '{table['cname'].replace(chr(39), chr(39) * 2)}';")
+    return lines
 
-    pdm_name = os.path.splitext(os.path.basename(pdm_path))[0]
-    base = folder_arg or os.path.join(os.path.expanduser("~"), "Desktop", pdm_name)
-    ddir = os.path.join(base, "ddl")
-    cdir = os.path.join(base, "\u94fe\u8def")
-    os.makedirs(ddir, exist_ok=True)
-    os.makedirs(cdir, exist_ok=True)
+
+def gen_etl(target: dict, source_refs: list[dict], by_id: dict, config: dict) -> list[str]:
+    target_name = full_name(target)
+    cfg = config.get("etl", {}).get(target_name, {})
+    sources = [by_id[ref["parent_id"]] for ref in source_refs]
+    aliases = {source["id"]: f"t{idx}" for idx, source in enumerate(sources, 1)}
+    mappings, incremental = cfg.get("mappings", {}), cfg.get("incremental_predicate")
+    source_filter = cfg.get("source_predicate")
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-
-    # --- DDL output by layer ---
-    lg = {}
-    for t in tables:
-        l = get_layer(t["schema"])
-        if schema_filter and l != schema_filter: continue
-        lg.setdefault(l, []).append(t)
-    for l in LAYERS:
-        if l not in lg: continue
-        fp = os.path.join(ddir, l + ".sql")
-        out = [
-            "-- DDL from Power Designer PDM",
-            "-- ******************************************************************** --",
-            "-- author: \u6211\u662f\u8c01",
-            "-- create time: " + now,
-            "-- ******************************************************************** --",
-            "",
-            "-- ================ Layer: " + l + " ================",
-            ""
-        ]
-        for t in lg[l]:
-            out.extend(gen_ddl(t, l))
-            out.append("")
-        with open(fp, "w", encoding="utf-8") as f:
-            f.write("\n".join(out))
-        print("Written: " + fp)
-
-    # --- ETL chains from arrows ---
-    if refs:
-        target_refs = {}
-        for ref in refs:
-            child = tbid.get(ref['child_id'])
-            if not child: continue
-            if schema_filter and get_layer(child['schema']) != schema_filter: continue
-            parent = tbid.get(ref['parent_id'])
-            if not parent: continue
-            tid = ref['child_id']
-            target_refs.setdefault(tid, []).append(ref)
-        written_tids = set()
-        for tid, trefs in sorted(target_refs.items()):
-            if tid in written_tids: continue
-            written_tids.add(tid)
-            child = tbid[tid]
-            if not child: continue
-            fname = child['name'] + '.sql'
-            fp = os.path.join(cdir, fname)
-            out = gen_merged_etl(trefs, tbid, VAR_MONTHS)
-            with open(fp, 'w', encoding='utf-8') as f: f.write(chr(10).join(out))
-            print('Written: ' + fp)
-
+    lines = [f"-- {layer_for(target).upper()} sql", "-- ******************************************************************** --",
+             "-- author: 我是谁", f"-- create time: {now}", "-- ******************************************************************** --",
+             f"-- ETL: {' + '.join(full_name(s) for s in sources)} -> {target_name}",
+             "", "----------原有数据删除---------------"]
+    if incremental and source_filter:
+        lines.extend(["delete", f"from {target_name}", f"where {incremental}", ";"])
     else:
-        print("Note: No reference arrows in PDM. Falling back to name-based chain grouping.")
-        cg = {}
-        for t in tables:
-            l = get_layer(t["schema"])
-            if schema_filter and l != schema_filter: continue
-            ckey = get_chain_key(t["name"])
-            cg.setdefault(ckey, []).append(t)
-        for ckey, ctl in sorted(cg.items()):
-            ctl.sort(key=lambda x: LAYERS.index(get_layer(x["schema"])) if get_layer(x["schema"]) in LAYERS else 99)
-            fp = os.path.join(cdir, ckey + ".sql")
-            out = [
-                "-- " + "*" * 70,
-                "-- Chain: " + ckey,
-                "-- author: \u6211\u662f\u8c01",
-                "-- create time: " + now,
-                "-- " + "*" * 70,
-                ""
-            ]
-            prev = None
-            for t in ctl:
-                l = get_layer(t["schema"])
-                if prev and l != prev:
-                    out.append("")
-                    out.append("-- >>> Flow: " + prev + " -> " + l + " <<<")
-                    out.append("")
-                out.extend(gen_ddl(t, l))
-                out.append("")
-                prev = l
-            with open(fp, "w", encoding="utf-8") as f:
-                f.write("\n".join(out))
-            print("Written: " + fp)
+        lines.extend(["-- NEED_CONFIRM: 未同时配置目标 DELETE 和来源过滤条件，DELETE 已禁用",
+                      f"-- delete from {target_name} where <incremental_predicate>;"])
+    lines.extend(["", "-------------新数据插入------------", f"insert into {target_name}", "("])
+    for idx, col in enumerate(target["columns"]):
+        lines.append(f"{'    ' if idx == 0 else '   ,'}{col['code']:<25} -- '{col['name']}'")
+    lines.extend([")", "select"])
+    for idx, col in enumerate(target["columns"]):
+        expression, reason = mappings.get(col["code"]), ""
+        if not expression:
+            expression = f"cast(null as {col['type']})"
+            reason = "NEED_CONFIRM: 字段映射缺少明确业务依据"
+        lines.append(f"{'     ' if idx == 0 else '    ,'}{expression:<35} as {col['code']:<24} -- {col['name']}")
+        if reason:
+            lines.append(f"    -- {reason}: {col['code']}")
+    primary = sources[0]
+    lines.append(f"from {full_name(primary)} {aliases[primary['id']]} -- {primary['cname']}")
+    configured_joins = cfg.get("joins", {})
+    for source, ref in zip(sources[1:], source_refs[1:]):
+        alias, source_name = aliases[source["id"]], full_name(source)
+        join = configured_joins.get(source_name, {})
+        if not isinstance(join, dict):
+            join = {}
+        # ReferenceJoin connects this source to the target model, not necessarily to t1.
+        if join.get("type") in {"left", "inner"} and join.get("on") and join.get("reason"):
+            lines.append(f"{join['type']} join {source_name} {alias} -- {source['cname']}；依据：{join['reason']}")
+            lines.append("    on " + "\n   and ".join(join["on"]))
+        else:
+            lines.extend([f"-- NEED_CONFIRM: {source_name} 缺少 JOIN KEY、类型或基数依据，未生成 JOIN",
+                          f"-- <join_type> join {source_name} {alias} on <join_predicate>"])
+    if source_filter:
+        lines.append(f"where {source_filter}")
+    lines.append(";")
+    if any("NEED_CONFIRM" in line or "TODO" in line for line in lines):
+        # Keep the draft reviewable while preventing accidental execution.
+        start = next(index for index, line in enumerate(lines) if line.startswith("insert into "))
+        lines.insert(start, "-- NEED_CONFIRM: 以下 INSERT 为评审草稿，确认规则后重新生成")
+        for index in range(start + 1, len(lines)):
+            lines[index] = "-- " + lines[index]
+    return lines
 
-    print("")
-    print("All files saved to: " + base)
-    print("  ddl/    - Layer-based DDL")
-    print("  \u94fe\u8def/ - ETL chain (from arrows)")
+
+def load_config(path: str | None) -> dict:
+    if not path:
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="PDM to GaussDB DDL + ETL (arrow-based)")
-    ap.add_argument("pdm_file", help="Power Designer .pdm file path")
-    ap.add_argument("-o", "--output", help="Single DDL output file (overrides folder mode)")
-    ap.add_argument("--schema", choices=LAYERS, help="Filter by single layer only")
-    ap.add_argument("--folder", help="Base output folder (default: Desktop/{PDM file})")
-    args = ap.parse_args()
-    if not os.path.exists(args.pdm_file):
-        print("File not found", file=sys.stderr)
-        sys.exit(1)
-    if args.output:
-        tbid, tables, _ = parse_pdm_with_notes(args.pdm_file)
-        if not tables:
-            print("No tables found", file=sys.stderr)
-            sys.exit(1)
-        groups = {}
-        for t in tables:
-            l = get_layer(t["schema"])
-            if args.schema and l != args.schema: continue
-            groups.setdefault(l, []).append(t)
-        now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-        out = [
-            "-- DDL from Power Designer PDM",
-            "-- ******************************************************************** --",
-            "-- author: \u6211\u662f\u8c01",
-            "-- create time: " + now,
-            "-- ******************************************************************** --",
-            ""
-        ]
-        for l in LAYERS:
-            if l not in groups: continue
-            out.append("")
-            out.append("-- " + "=" * 30 + " Layer: " + l + " " + "=" * 30)
-            for t in groups[l]:
-                out.extend(gen_ddl(t, l))
-                out.append("")
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write("\n".join(out))
-        print("Written: " + args.output)
-    else:
-        output_pdm(args.pdm_file, args.folder, args.schema)
+def output_project(pdm_path: str, folder: str | None, schema_filter: str | None, config: dict):
+    by_id, tables, refs = parse_pdm(pdm_path)
+    if not tables:
+        raise ValueError("PDM 中未找到表")
+    base = Path(folder) if folder else Path.home() / "Desktop" / Path(pdm_path).stem
+    ddl_dir, etl_dir = base / "ddl", base / "链路"
+    ddl_dir.mkdir(parents=True, exist_ok=True)
+    etl_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    for layer in LAYERS:
+        selected = [t for t in tables if layer_for(t) == layer and (not schema_filter or layer == schema_filter)]
+        if not selected:
+            continue
+        output = [f"-- {layer.upper()} sql", "-- ******************************************************************** --",
+                  "-- author: 我是谁", f"-- create time: {now}", "-- ******************************************************************** --"]
+        for table in selected:
+            output.extend(gen_ddl(table, config))
+        (ddl_dir / f"{layer}.sql").write_text("\n".join(output) + "\n", encoding="utf-8")
+    refs_by_target = {}
+    for ref in refs:
+        refs_by_target.setdefault(ref["child_id"], []).append(ref)
+    for target_id, target_refs in refs_by_target.items():
+        target = by_id[target_id]
+        if not schema_filter or layer_for(target) == schema_filter:
+            (etl_dir / f"{target['name']}.sql").write_text(
+                "\n".join(gen_etl(target, target_refs, by_id, config)) + "\n", encoding="utf-8")
+    if not refs:
+        (etl_dir / "NEED_CONFIRM.md").write_text(
+            "# NEED_CONFIRM\n\nPDM 未提供表关系。V2 不按表名猜测数据链路，请补充 Reference 或配置文件。\n", encoding="utf-8")
+    return base
+
+
+def output_single_ddl(pdm_path: str, output_file: str, schema_filter: str | None, config: dict):
+    _, tables, _ = parse_pdm(pdm_path)
+    if not tables:
+        raise ValueError("PDM 中未找到表")
+    selected = [table for table in tables if not schema_filter or layer_for(table) == schema_filter]
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    lines = ["-- DDL from PowerDesigner PDM", "-- ******************************************************************** --",
+             "-- author: 我是谁", f"-- create time: {now}", "-- ******************************************************************** --"]
+    for table in selected:
+        lines.extend(gen_ddl(table, config))
+    path = Path(output_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="安全地将 PowerDesigner PDM 转为 GaussDB DDL/ETL")
+    parser.add_argument("pdm_file")
+    parser.add_argument("-o", "--output", help="输出目录；以 .sql 结尾时兼容 V1 单文件 DDL")
+    parser.add_argument("--folder", help="输出目录（兼容 V1）")
+    parser.add_argument("--schema", choices=LAYERS)
+    parser.add_argument("--config", help="JSON 规则配置")
+    args = parser.parse_args(argv)
+    try:
+        config = load_config(args.config)
+        if args.output and args.output.lower().endswith(".sql"):
+            base = output_single_ddl(args.pdm_file, args.output, args.schema, config)
+        else:
+            base = output_project(args.pdm_file, args.output or args.folder, args.schema, config)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"已输出到: {base}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
