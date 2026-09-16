@@ -35,6 +35,8 @@ python -m unittest discover -s tests -v
 
 填写 PowerDesigner Notes 后保存 PDM，再重新运行转换器；先看输出目录的 `PDM_Notes_业务上下文.md`，确认文字已读到，并将明确的规则写进配置文件。规则不完整时，链路保留 `NEED_CONFIRM`。
 
+不知道 Notes 如何填写时，直接复制 [六项业务规则模板与利润表实例](references/pdm-notes-template.md) 到目标表的 Notes → Description，替换字段、来源和处理规则后保存。历史表与 DWI 利润表各有一个完整示例。
+
 兼容 V1 的 `-o output.sql` 单文件 DDL 模式；输出目录可使用 `--output output` 或 `--folder output`。
 
 ## 目录

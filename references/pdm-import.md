@@ -8,6 +8,8 @@ PowerDesigner 可能把 Notes 保存为 RTF 富文本（例如 `\\rtf1`、`\\'xx
 
 先读 Notes 的业务逻辑，再确定是否已有足够证据配置字段映射、JOIN、增量和汇总口径。自由文本不直接转成 SQL 谓词或函数；如果描述不够精确，保留 `NEED_CONFIRM`。Notes 中出现与模型字段或其他 Notes 冲突的规则时，指出冲突并请业务方确认。`Comment` 与 Notes 分开处理，不假定二者等同。
 
+填写 Notes 时可复制 [六项业务规则模板与利润表实例](pdm-notes-template.md)。模板要求写清粒度、来源、关联、计算、更新和数据质量；无关联或派生计算时写明“无需 JOIN”或“无派生计算”，不要保留占位符。
+
 Reference 与 ExtendedDependency 表示模型中的关联或依赖。即便 ReferenceJoin 指明某源表与目标模型的键，也不自动证明多个来源之间应如何 JOIN。多源 ETL 的驱动表、JOIN KEY、JOIN 类型、字段归属和基数仍需明确配置或人工确认。
 
 无 Reference/ExtendedDependency 时只生成分层 DDL，并写出 `链路/NEED_CONFIRM.md`；不会按表名推测 ETL 链路。输出保留原有 `ddl/` 与 `链路/` 结构、前置逗号、中文注释和固定文件头。
