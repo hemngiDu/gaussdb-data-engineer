@@ -145,6 +145,24 @@ class V2SafetyTests(unittest.TestCase):
             self.assertNotIn("\n累计值取年内累计", etl)
             self.assertIn("NEED_CONFIRM", etl)
 
+    def test_powerdesigner_rtf_notes_and_diagram_reference_are_scoped(self):
+        xml = """<o:Model><o:Table Id="s"><a:Code>irpt.irpt_profit</a:Code>
+<a:Description>{\\rtf1\\ansi\\ansicpg936{\\fonttbl{\\f0 Arial;}}\\pard\\f0 months\\'a1\\'a2dept_one \\'d7\\'e9\\'ba\\'cf\\'d2\\'bb\\'d0\\'d0\\par}</a:Description>
+<c:Columns><o:Column Id="c1"><a:Code>months</a:Code><a:DataType>VARCHAR(7)</a:DataType></o:Column></c:Columns></o:Table>
+<o:Table Id="t"><a:Code>dwi.dwi_profit</a:Code><c:Columns>
+<o:Column Id="c2"><a:Code>months</a:Code><a:DataType>VARCHAR(7)</a:DataType></o:Column></c:Columns></o:Table>
+<o:Reference Ref="r1"/>
+<o:Reference Id="r1"><a:Code>profit_source</a:Code>
+<c:ParentTable><o:Table Ref="s"/></c:ParentTable>
+<c:ChildTable><o:Table Ref="t"/></c:ChildTable></o:Reference></o:Model>"""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "model.pdm"
+            path.write_text(xml, encoding="utf-8")
+            by_id, _, refs = parse_pdm(path)
+            self.assertEqual(by_id["s"]["notes"]["description"], "months、dept_one 组合一行")
+            self.assertEqual(refs[0]["code"], "profit_source")
+            self.assertEqual(refs[0]["notes"]["description"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

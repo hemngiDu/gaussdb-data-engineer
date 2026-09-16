@@ -34,7 +34,45 @@ def _tag(block: str, name: str) -> str:
     value = match.group(1).strip()
     if value.startswith("<![CDATA[") and value.endswith("]]>"):
         value = value[9:-3]
-    return html.unescape(value).strip()
+    value = html.unescape(value)
+    return _rtf_text(value).strip() if value.lstrip().startswith("{\\rtf") else value.strip()
+
+
+def _rtf_text(value: str) -> str:
+    """Decode the PowerDesigner Notes RTF body without treating formatting as rules."""
+    codepage = re.search(r"\\ansicpg(\d+)", value)
+    start = value.find("\\pard")
+    if start < 0:
+        return value
+    value = value[start:]
+    encoding = "cp936" if not codepage else f"cp{codepage.group(1)}"
+    tokens = re.finditer(r"\\'[0-9a-fA-F]{2}|\\[a-zA-Z]+-?\d* ?|\\[{}\\]|[{}]|[^\\{}]+|\\.", value)
+    result, byte_run = [], bytearray()
+
+    def flush() -> None:
+        if byte_run:
+            try:
+                result.append(byte_run.decode(encoding, errors="replace"))
+            except LookupError:
+                result.append(byte_run.decode("cp936", errors="replace"))
+            byte_run.clear()
+
+    for match in tokens:
+        token = match.group(0)
+        if token.startswith("\\'"):
+            byte_run.append(int(token[2:], 16))
+            continue
+        flush()
+        if token in ("\\par", "\\line"):
+            result.append("\n")
+        elif token == "\\tab":
+            result.append("\t")
+        elif token in ("\\{", "\\}", "\\\\"):
+            result.append(token[1:])
+        elif not token.startswith("\\") and token not in ("{", "}"):
+            result.append(token)
+    flush()
+    return "".join(result).strip()
 
 
 def _notes(block: str) -> dict[str, str]:
@@ -101,7 +139,7 @@ def parse_pdm(path: str | Path):
         tables.append(table)
         by_id[table_id] = table
     refs = []
-    for match in re.finditer(r'<o:Reference(?:\s[^>]*)?>(.*?)</o:Reference>', content, re.S):
+    for match in re.finditer(r'<o:Reference(?:\s[^>]*)?(?<!/)>(.*?)</o:Reference>', content, re.S):
         body = match.group(1)
         parent = re.search(r'<c:ParentTable>.*?<o:Table\s+Ref="([^"]+)"', body, re.S)
         child = re.search(r'<c:ChildTable>.*?<o:Table\s+Ref="([^"]+)"', body, re.S)
