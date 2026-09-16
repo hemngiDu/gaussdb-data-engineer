@@ -8,6 +8,7 @@ defaults. Missing business rules remain visible as NEED_CONFIRM/TODO markers.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import sys
@@ -28,7 +29,26 @@ TYPE_MAP = {
 
 def _tag(block: str, name: str) -> str:
     match = re.search(rf"<a:{re.escape(name)}>(.*?)</a:{re.escape(name)}>", block, re.S)
-    return match.group(1).strip() if match else ""
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if value.startswith("<![CDATA[") and value.endswith("]]>"):
+        value = value[9:-3]
+    return html.unescape(value).strip()
+
+
+def _notes(block: str) -> dict[str, str]:
+    return {key.lower(): _tag(block, key) for key in ("Comment", "Description", "Annotation")}
+
+
+def _note_lines(notes: dict[str, str], owner: str) -> list[str]:
+    lines = []
+    for field in ("description", "annotation", "comment"):
+        value = notes.get(field, "")
+        if value:
+            lines.append(f"-- PDM {owner} {field}:")
+            lines.extend(f"--   {part}" for part in value.splitlines())
+    return lines
 
 
 def map_type(raw: str, length: str = "") -> tuple[str, str]:
@@ -58,7 +78,8 @@ def parse_pdm(path: str | Path):
     tables, by_id, column_owner = [], {}, {}
     for match in re.finditer(r'<o:Table\s+[^>]*Id="([^"]+)"[^>]*>(.*?)</o:Table>', content, re.S):
         table_id, body = match.groups()
-        code = _tag(body, "Code")
+        header = body.split("<c:Columns", 1)[0]
+        code = _tag(header, "Code")
         if not code:
             continue
         schema, _, name = code.lower().rpartition(".")
@@ -72,11 +93,11 @@ def parse_pdm(path: str | Path):
                 continue
             data_type, warning = map_type(_tag(col_body, "DataType"), _tag(col_body, "Length"))
             column = {"id": column_id, "code": col_code, "name": _tag(col_body, "Name") or col_code,
-                      "type": data_type, "type_warning": warning}
+                      "type": data_type, "type_warning": warning, "notes": _notes(col_body)}
             columns.append(column)
             column_owner[column_id] = (table_id, col_code)
         table = {"id": table_id, "schema": schema, "name": name,
-                 "cname": _tag(body, "Name") or name, "columns": columns}
+                 "cname": _tag(header, "Name") or name, "columns": columns, "notes": _notes(header)}
         tables.append(table)
         by_id[table_id] = table
     refs = []
@@ -92,7 +113,7 @@ def parse_pdm(path: str | Path):
             if len(found) >= 2 and found[0] in column_owner and found[-1] in column_owner:
                 joins.append((column_owner[found[0]][1], column_owner[found[-1]][1]))
         refs.append({"parent_id": parent.group(1), "child_id": child.group(1),
-                     "join_cols": joins, "code": _tag(body, "Code")})
+                     "join_cols": joins, "code": _tag(body, "Code"), "notes": _notes(body)})
     # PowerDesigner traceability arrows: Object2 is the source and Object1 the
     # dependent target. They prove a dependency, never a JOIN or field mapping.
     seen = {(item["parent_id"], item["child_id"]) for item in refs}
@@ -106,7 +127,7 @@ def parse_pdm(path: str | Path):
         if pair[0] not in by_id or pair[1] not in by_id or pair[0] == pair[1] or pair in seen:
             continue
         refs.append({"parent_id": pair[0], "child_id": pair[1],
-                     "join_cols": [], "code": "ExtendedDependency"})
+                     "join_cols": [], "code": "ExtendedDependency", "notes": _notes(body)})
         seen.add(pair)
     return by_id, tables, refs
 
@@ -169,6 +190,15 @@ def gen_etl(target: dict, source_refs: list[dict], by_id: dict, config: dict) ->
              "-- author: 我是谁", f"-- create time: {now}", "-- ******************************************************************** --",
              f"-- ETL: {' + '.join(full_name(s) for s in sources)} -> {target_name}",
              "", "----------原有数据删除---------------"]
+    note_context = _note_lines(target.get("notes", {}), f"目标表 {target_name}")
+    for col in target["columns"]:
+        note_context.extend(_note_lines(col.get("notes", {}), f"目标字段 {target_name}.{col['code']}"))
+    for source, ref in zip(sources, source_refs):
+        source_name = full_name(source)
+        note_context.extend(_note_lines(source.get("notes", {}), f"来源表 {source_name}"))
+        note_context.extend(_note_lines(ref.get("notes", {}), f"关系 {source_name} -> {target_name}"))
+    if note_context:
+        lines[7:7] = ["-- PDM Notes/Comment 业务上下文；自由文本不自动转为可执行规则", *note_context, ""]
     if incremental and source_filter:
         lines.extend(["delete", f"from {target_name}", f"where {incremental}", ";"])
     else:
@@ -228,6 +258,33 @@ def output_project(pdm_path: str, folder: str | None, schema_filter: str | None,
     ddl_dir, etl_dir = base / "ddl", base / "链路"
     ddl_dir.mkdir(parents=True, exist_ok=True)
     etl_dir.mkdir(parents=True, exist_ok=True)
+    note_count = sum(bool(value) for table in tables for field, value in table.get("notes", {}).items()
+                     if field in {"description", "annotation"})
+    note_count += sum(bool(value) for table in tables for col in table["columns"]
+                      for field, value in col.get("notes", {}).items() if field in {"description", "annotation"})
+    note_count += sum(bool(value) for ref in refs for field, value in ref.get("notes", {}).items()
+                      if field in {"description", "annotation"})
+    report = ["# PDM Notes 与 Comment", "", "Description/Annotation 为 Notes 内容；Comment 单独列出。自由文本仅作业务证据，不直接执行。", "",
+              f"已读取 Notes 条目：{note_count}。" if note_count else "未找到已保存的 Notes（Description/Annotation）；下方仅列出 Comment。", ""]
+    for table in tables:
+        if schema_filter and layer_for(table) != schema_filter:
+            continue
+        report.append(f"## {full_name(table)}")
+        for field, value in table.get("notes", {}).items():
+            if value:
+                report.extend([f"### 表 {field}", "", value, ""])
+        for col in table["columns"]:
+            for field, value in col.get("notes", {}).items():
+                if value:
+                    report.extend([f"### 字段 {col['code']} {field}", "", value, ""])
+    for ref in refs:
+        source, target = by_id[ref["parent_id"]], by_id[ref["child_id"]]
+        if schema_filter and layer_for(target) != schema_filter:
+            continue
+        for field, value in ref.get("notes", {}).items():
+            if value:
+                report.extend([f"## 关系 {full_name(source)} -> {full_name(target)} {field}", "", value, ""])
+    (base / "PDM_Notes_业务上下文.md").write_text("\n".join(report) + "\n", encoding="utf-8")
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     for layer in LAYERS:
         selected = [t for t in tables if layer_for(t) == layer and (not schema_filter or layer == schema_filter)]

@@ -6,6 +6,7 @@
 
 - 保留前置逗号、中文字段注释和固定文件头。
 - PDM 只提供结构证据；业务粒度、字段语义、JOIN KEY、增量条件和分布键不能靠同名或位置猜测。
+- PDM 的表、字段和关系 Notes（Description/Annotation）与 Comment 会分别读取；生成 `PDM_Notes_业务上下文.md`，供复核业务逻辑。自由文本不会自动变成可执行 SQL。
 - 无法确认时输出 `NEED_CONFIRM` 或 `TODO`，校验器阻止带有未确认项的 SQL 通过。
 - NULL 默认保持 NULL；只有配置或业务说明明确时才使用 `nvl`，默认值必须匹配字段类型。
 
@@ -31,6 +32,8 @@ python -m unittest discover -s tests -v
 ```
 
 `config.example.json` 展示显式配置分布策略、字段映射、JOIN 和增量条件。无配置也能生成供评审的草稿，但含未确认项时不会通过校验。
+
+填写 PowerDesigner Notes 后保存 PDM，再重新运行转换器；先看输出目录的 `PDM_Notes_业务上下文.md`，确认文字已读到，并将明确的规则写进配置文件。规则不完整时，链路保留 `NEED_CONFIRM`。
 
 兼容 V1 的 `-o output.sql` 单文件 DDL 模式；输出目录可使用 `--output output` 或 `--folder output`。
 

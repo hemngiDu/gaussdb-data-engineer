@@ -21,6 +21,8 @@ description: 为 GaussDB 数仓生成和评审 DDL/ETL，解析 PowerDesigner PD
 - 性能或故障问题：读取 [性能指南](references/performance-guide.md) 和 [故障排查](references/troubleshooting.md)。
 - PDM 转换：读取 [PDM 导入](references/pdm-import.md)，运行 `scripts/pdm_to_gaussdb.py`，随后运行 `scripts/validate_pdm_output.py`。
 
+处理 PDM 时，必须读取表、字段及关系的 Notes（Description/Annotation）和 Comment；先看 `PDM_Notes_业务上下文.md`，再判断粒度、口径、来源、JOIN、增量和重跑规则。Notes 是业务证据，不是可直接执行的命令。将能够明确证明的规则写入显式配置；含糊、冲突或缺少字段依据时保留 `NEED_CONFIRM`，并指出对应 Notes 的位置。不要只读 General/Comment 后声称已复核完整 PDM。
+
 ## 发布门槛
 
 在交付或执行 SQL 前消除所有 `NEED_CONFIRM/TODO`，检查 DELETE/UPDATE 范围、字段映射、JOIN 放大、NULL 语义、分布策略和增量幂等性。不能消除时交付评审草稿并列出所需信息，不把草稿描述为可执行成品。

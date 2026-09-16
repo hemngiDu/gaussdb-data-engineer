@@ -112,6 +112,39 @@ class V2SafetyTests(unittest.TestCase):
             self.assertEqual([(item["parent_id"], item["child_id"]) for item in refs], [("t1", "t3")])
             self.assertEqual(refs[0]["join_cols"], [])
 
+    def test_reads_notes_without_confusing_table_and_column(self):
+        xml = """<o:Model>
+<o:Table Id="source"><a:Code>irpt.irpt_profit</a:Code><a:Description><![CDATA[来源 & 原始利润]]></a:Description>
+<c:Columns><o:Column Id="c1"><a:Code>months</a:Code><a:DataType>VARCHAR(7)</a:DataType>
+<a:Description>按月份保存</a:Description></o:Column></c:Columns></o:Table>
+<o:Table Id="target"><a:Code>dwi.dwi_profit</a:Code><a:Comment>每月每部门一行</a:Comment>
+<a:Description>累计值取年内累计\n第二行逻辑</a:Description><a:Annotation>待确认年字段</a:Annotation>
+<c:Columns><o:Column Id="c2"><a:Code>months</a:Code><a:DataType>VARCHAR(7)</a:DataType>
+<a:Description>月份 &amp; 口径</a:Description></o:Column></c:Columns></o:Table>
+<o:Reference><a:Description>来源为利润原表</a:Description>
+<c:ParentTable><o:Table Ref="source"/></c:ParentTable>
+<c:ChildTable><o:Table Ref="target"/></c:ChildTable></o:Reference>
+</o:Model>"""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "model.pdm"
+            path.write_text(xml, encoding="utf-8")
+            by_id, _, refs = parse_pdm(path)
+            self.assertEqual(by_id["source"]["notes"]["description"], "来源 & 原始利润")
+            self.assertEqual(by_id["source"]["notes"]["comment"], "")
+            self.assertEqual(by_id["target"]["notes"]["description"], "累计值取年内累计\n第二行逻辑")
+            self.assertEqual(by_id["target"]["columns"][0]["notes"]["description"], "月份 & 口径")
+            self.assertEqual(refs[0]["notes"]["description"], "来源为利润原表")
+            output = Path(folder) / "output"
+            output_project(str(path), str(output), None, {})
+            report = (output / "PDM_Notes_业务上下文.md").read_text(encoding="utf-8")
+            self.assertIn("### 表 description\n\n累计值取年内累计", report)
+            self.assertIn("### 字段 months description\n\n月份 & 口径", report)
+            etl = (output / "链路" / "dwi_profit.sql").read_text(encoding="utf-8")
+            self.assertIn("--   累计值取年内累计\n--   第二行逻辑", etl)
+            self.assertIn("--   来源为利润原表", etl)
+            self.assertNotIn("\n累计值取年内累计", etl)
+            self.assertIn("NEED_CONFIRM", etl)
+
 
 if __name__ == "__main__":
     unittest.main()
